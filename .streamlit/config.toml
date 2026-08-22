@@ -1,0 +1,22 @@
+# The console is a dark tactical design: neon readouts on a dotted grid, with panel and
+# accent colours chosen against a near-black ground. Streamlit's light theme leaves its own
+# chrome -- widget text, dataframes, sidebar -- light while the custom CSS paints the
+# surfaces dark, which is the "light mode is broken" symptom.
+#
+# Pinning the theme here fixes it at the source: Streamlit's own components now use the
+# same palette as the custom CSS, so the app renders identically regardless of the
+# viewer's browser or OS preference. A light variant would need a second palette designed
+# from scratch, since neon-on-dark does not translate.
+[theme]
+base = "dark"
+primaryColor = "#00D2FF"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#151B28"
+textColor = "#C8D1E0"
+font = "monospace"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

@@ -22,7 +22,6 @@ Electronic Support (passive) only.
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
@@ -183,7 +182,18 @@ def run_strategy(environment, strategy_key: str, horizon: int, seed_stream: int)
 
 
 def spectrum_figure(environment, run: SimulationRun, start: int, end: int) -> go.Figure:
-    """Frequency-time console map: ground truth beneath, receiver path over it."""
+    """Frequency-time console map, built so the receiver's story reads at a glance.
+
+    Three deliberate choices keep it legible where the earlier version was busy:
+
+    * **No connecting line.** Joining consecutive dwells drew long strokes leaping across
+      the spectrum, which added no information -- the receiver does not pass through the
+      bands between two tunings -- and buried everything underneath.
+    * **Misses recede, hits advance.** Misses outnumber hits several times over, so they are
+      small and dim; hits are bright and larger. The eye should land on interceptions.
+    * **Truth is a field, not a foreground.** Ground truth is drawn small and semi-transparent
+      so it reads as terrain, rather than competing with the receiver's own marks.
+    """
     end = int(min(end, environment.n_timesteps, run.n_timesteps))
     start = int(max(0, start))
     figure = go.Figure()
@@ -194,7 +204,7 @@ def spectrum_figure(environment, run: SimulationRun, start: int, end: int) -> go
             x=steps + start,
             y=bands,
             mode="markers",
-            marker={"size": 7, "symbol": "square", "color": theme.TRUTH, "opacity": 0.8},
+            marker={"size": 6, "symbol": "square", "color": theme.TRUTH, "opacity": 0.45},
             name="Emitter Active",
             hovertemplate="T %{x} | Band %{y} | ACTIVE<extra></extra>",
         )
@@ -207,20 +217,10 @@ def spectrum_figure(environment, run: SimulationRun, start: int, end: int) -> go
 
     figure.add_trace(
         go.Scatter(
-            x=timesteps,
-            y=selected,
-            mode="lines",
-            line={"color": theme.ACCENT_NEUTRAL, "width": 1},
-            name="Receiver Path",
-            hoverinfo="skip",
-        )
-    )
-    figure.add_trace(
-        go.Scatter(
             x=timesteps[~hits],
             y=selected[~hits],
             mode="markers",
-            marker={"size": 7, "symbol": "x", "color": theme.ACCENT_MISS},
+            marker={"size": 5, "symbol": "circle", "color": theme.ACCENT_MISS, "opacity": 0.55},
             name="Scan Failed (MISS)",
             hovertemplate="T %{x} | Band %{y} | MISS<extra></extra>",
         )
@@ -231,10 +231,10 @@ def spectrum_figure(environment, run: SimulationRun, start: int, end: int) -> go
             y=selected[hits],
             mode="markers",
             marker={
-                "size": 9,
+                "size": 11,
                 "symbol": "circle",
                 "color": theme.ACCENT_HIT,
-                "line": {"width": 1, "color": "#FFFFFF"},
+                "line": {"width": 1.2, "color": "#FFFFFF"},
             },
             name="Target Intercept (HIT)",
             hovertemplate="T %{x} | Band %{y} | HIT<extra></extra>",
@@ -244,49 +244,109 @@ def spectrum_figure(environment, run: SimulationRun, start: int, end: int) -> go
     figure.update_layout(
         **theme.plotly_layout(
             height=430,
-            xaxis=theme.axis("TIME (CYCLES)", range=[start - 0.5, end + 0.5]),
-            yaxis=theme.axis("FREQUENCY BAND", range=[-0.5, environment.n_bands - 0.5]),
+            xaxis=theme.axis("TIME (CYCLES)", range=[start - 0.5, end + 0.5], showgrid=False),
+            yaxis=theme.axis(
+                "FREQUENCY BAND", range=[-0.5, environment.n_bands - 0.5], dtick=4
+            ),
+            hovermode="closest",
+        )
+    )
+    return figure
+
+
+def reward_figure(runs: dict[str, SimulationRun], keys: list[str]) -> go.Figure:
+    """Cumulative reward over the run, drawn in left-to-right when scrolled into view.
+
+    A single averaged number hides *when* a strategy earns: this shows the open-loop sweep
+    drifting steadily negative on empty dwells while an adaptive scheduler climbs away from
+    it. Animating the draw makes that divergence the thing the eye follows.
+    """
+    palette = {BASELINE_KEY: theme.ACCENT_NEUTRAL, CANDIDATE_KEY: theme.ACCENT_HIT}
+    series: list[tuple[str, np.ndarray, np.ndarray]] = []
+    for key in keys:
+        cumulative = np.cumsum(runs[key].event_reward)
+        stride = max(1, cumulative.size // 600)
+        series.append((key, np.arange(0, cumulative.size, stride), cumulative[::stride]))
+
+    def traces(fraction: float) -> list[go.Scatter]:
+        drawn = []
+        for key, x, y in series:
+            cut = max(2, int(len(x) * fraction))
+            drawn.append(
+                go.Scatter(
+                    x=x[:cut],
+                    y=y[:cut],
+                    mode="lines",
+                    name=key,
+                    line={"color": palette.get(key, theme.ACCENT_INFO), "width": 2},
+                    hovertemplate="T %{x} | cumulative reward %{y:.1f}<extra></extra>",
+                )
+            )
+        return drawn
+
+    figure = go.Figure(data=traces(1.0))
+    figure.frames = [go.Frame(data=traces(step / 24), name=str(step)) for step in range(1, 25)]
+
+    limit = max(float(np.max(np.abs(y))) for _, _, y in series) if series else 1.0
+    span_end = max(float(x[-1]) for _, x, _ in series) if series else 1.0
+    # Horizontal zero reference kept: it marks where a strategy stops losing reward and
+    # starts gaining, which is the point of the chart.
+    figure.add_hline(y=0, line={"color": theme.GRID, "width": 1, "dash": "dot"})
+    figure.update_layout(
+        **theme.plotly_layout(
+            height=320,
+            xaxis=theme.axis("TIME (CYCLES)", range=[0, span_end], showgrid=False),
+            yaxis=theme.axis("CUMULATIVE REWARD", range=[-limit * 0.25, limit * 1.15]),
         )
     )
     return figure
 
 
 def diagnostics_figure(
-    labels: list[str], baseline: list[float], candidate: list[float], ceiling: float
+    labels: list[str], baseline: list[float], candidate: list[float]
 ) -> go.Figure:
-    """Grouped bar chart of the figures of merit, baseline against candidate."""
-    figure = go.Figure()
-    figure.add_trace(
-        go.Bar(
-            x=labels,
-            y=baseline,
-            name="Sequential Sweep",
-            marker_color=theme.ACCENT_NEUTRAL,
-            text=[f"{v:.3g}" for v in baseline],
-            textposition="auto",
-        )
-    )
-    figure.add_trace(
-        go.Bar(
-            x=labels,
-            y=candidate,
-            name="Smart Scan",
-            marker_color=theme.ACCENT_HIT,
-            text=[f"{v:.3g}" for v in candidate],
-            textposition="auto",
-        )
-    )
+    """Grouped bars of the figures of merit, in the reference style.
+
+    Bars share one axis and carry their raw value as a label, exactly as the reference
+    console does. Frames are attached for the scroll-triggered growth animation; the
+    figure's initial state is the finished chart, so it still reads correctly if the
+    animation never fires.
+    """
+    ceiling = max(max(baseline), max(candidate), 1e-9)
+
+    def bars(factor: float) -> list[go.Bar]:
+        return [
+            go.Bar(
+                x=labels,
+                y=[v * factor for v in baseline],
+                name="Sequential Scan",
+                marker_color=theme.ACCENT_NEUTRAL,
+                text=[f"{v:.3g}" for v in baseline],
+                textposition="auto",
+            ),
+            go.Bar(
+                x=labels,
+                y=[v * factor for v in candidate],
+                name="Smart Scan",
+                marker_color=theme.ACCENT_HIT,
+                text=[f"{v:.3g}" for v in candidate],
+                textposition="auto",
+            ),
+        ]
+
+    figure = go.Figure(data=bars(1.0))
+    figure.frames = [go.Frame(data=bars(step / 20), name=str(step)) for step in range(1, 21)]
     figure.update_layout(
         **theme.plotly_layout(
             barmode="group",
             bargap=0.35,
             height=400,
-            xaxis=theme.axis(""),
-            yaxis=theme.axis("", range=[0, max(ceiling, 1e-6) * 1.25]),
+            xaxis=theme.axis("", showgrid=False),
+            yaxis=theme.axis("", range=[0, ceiling * 1.2]),
             legend={
                 "orientation": "h",
                 "yanchor": "bottom",
-                "y": 1.12,
+                "y": 1.15,
                 "xanchor": "center",
                 "x": 0.5,
                 "font": {"color": theme.TEXT_BRIGHT},
@@ -296,7 +356,92 @@ def diagnostics_figure(
     return figure
 
 
+def render_scroll_animated(figure: go.Figure, height: int = 430) -> None:
+    """Render a figure that plays its frames the first time it scrolls into view.
+
+    Streamlit has no scroll hook, so the chart is rendered as a self-contained component
+    and an ``IntersectionObserver`` inside it starts the animation when at least a third
+    of the chart becomes visible. It fires once, then disconnects -- an animation that
+    replays on every scroll past would be a distraction rather than a flourish.
+
+    The chart is drawn at its final values first and only reset to zero once the observer
+    is armed, so a browser that never fires the callback still shows a correct chart
+    rather than an empty one.
+    """
+    import streamlit.components.v1 as components
+
+    payload = figure.to_json()
+    components.html(
+        f"""
+        <div id="chart"></div>
+        <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+        <script>
+          const figure = {payload};
+          const target = document.getElementById("chart");
+          // Frames must ride on the figure object. The (div, data, layout, config)
+          // signature silently drops them, which leaves Plotly.animate with nothing to
+          // play and the chart stuck at whatever it was last set to.
+          Plotly.newPlot(target, {{
+            data: figure.data,
+            layout: figure.layout,
+            frames: figure.frames,
+            config: {{displayModeBar: false, responsive: true}}
+          }});
+
+          const zeroed = figure.frames[0].data;
+          let played = false;
+          const observer = new IntersectionObserver((entries) => {{
+            entries.forEach((entry) => {{
+              if (entry.isIntersecting && !played) {{
+                played = true;
+                observer.disconnect();
+                Plotly.animate(target, {{data: zeroed}}, {{
+                  transition: {{duration: 0}}, frame: {{duration: 0, redraw: false}}
+                }}).then(() => Plotly.animate(target, null, {{
+                  transition: {{duration: 0}},
+                  frame: {{duration: 40, redraw: false}},
+                  mode: "immediate"
+                }}));
+              }}
+            }});
+          }}, {{threshold: 0.33}});
+          observer.observe(target);
+        </script>
+        """,
+        height=height,
+    )
+
+
 # --- panels ---------------------------------------------------------------------------
+
+
+def render_verdict(runs: dict[str, SimulationRun], strategy_key: str) -> None:
+    """State the headline outcome in one plain sentence, before any chart.
+
+    Someone opening this console should learn what happened without first decoding five
+    panels of instrumentation.
+    """
+    baseline = runs[BASELINE_KEY].metrics
+    candidate = runs[strategy_key].metrics
+    ratio = (
+        candidate["average_intercept_rate"] / baseline["average_intercept_rate"]
+        if baseline["average_intercept_rate"] > 0
+        else float("nan")
+    )
+    if not np.isfinite(ratio):
+        return
+    if ratio >= 1.05:
+        colour, verb = theme.ACCENT_HIT, f"intercepted {ratio:.2f}x as many transmissions as"
+    elif ratio <= 0.95:
+        colour, verb = theme.ACCENT_MISS, f"intercepted only {ratio:.2f}x as many transmissions as"
+    else:
+        colour, verb = theme.ACCENT_WARN, "intercepted about as many transmissions as"
+    theme.status_line(
+        f"RESULT :: on this environment <b>{strategy_key}</b> {verb} the open-loop sweep, "
+        f"catching {candidate['average_intercept_rate'] * 100:.1f} per 100 cycles against "
+        f"{baseline['average_intercept_rate'] * 100:.1f}.",
+        colour,
+    )
 
 
 def render_briefing() -> None:
@@ -560,6 +705,10 @@ def main() -> None:
         st.caption(f"ARTIFACT :: {config.path_for('paths.model_artifact').name}")
 
     render_briefing()
+    # Reserved now, filled once the strategy control below has been read. A container
+    # holds its place in the layout, so the takeaway can lead the page even though it
+    # depends on a control rendered further down.
+    verdict_container = st.container()
 
     payload = build_environment_cached(
         entry.path,
@@ -603,19 +752,40 @@ def main() -> None:
 
         with control_b:
             cursor = st.slider(
-                "TIMELINE SCRUBBER (CYCLE)", 0, run.n_timesteps - 1, min(400, run.n_timesteps - 1)
+                "TIMELINE SCRUBBER (CYCLE)",
+                0,
+                run.n_timesteps - 1,
+                min(400, run.n_timesteps - 1),
+                help="Moves the readout and the marker line to a moment in the run.",
             )
         with control_c:
             span = st.slider(
-                "WINDOW (CYCLES)", 100, min(1200, run.n_timesteps), min(400, run.n_timesteps), step=50
+                "WINDOW (CYCLES)",
+                100,
+                min(1200, run.n_timesteps),
+                min(400, run.n_timesteps),
+                step=50,
+                help="How much of the run the map shows around the scrubber position.",
             )
 
     window_start = max(0, min(cursor - span + 1, run.n_timesteps - span))
 
+    with verdict_container:
+        render_verdict(runs, strategy_key)
+
     with heatmap_container:
         st.markdown("#### FREQUENCY-TIME SPECTRUM HEATMAP")
         st.plotly_chart(
-            spectrum_figure(environment, run, window_start, cursor + 1), use_container_width=True
+            spectrum_figure(environment, run, window_start, cursor + 1),
+            use_container_width=True,
+        )
+        visible = run.hits[window_start : cursor + 1]
+        st.caption(
+            f"Showing cycles {window_start}-{cursor} of {run.n_timesteps} "
+            f"({(cursor + 1 - window_start) * environment.timestep_us / 1000:.0f} ms of "
+            f"simulated time) — {int(visible.sum())} intercepts in view. "
+            "Teal squares are real transmissions; the receiver only ever sees one band per "
+            "cycle."
         )
 
     with telemetry_container:
@@ -627,8 +797,6 @@ def main() -> None:
         st.metric(
             "Predicted Activity", "N/A" if not np.isfinite(probability) else f"{probability:.3f}"
         )
-        st.metric("Intercept Status", "HIT" if run.hits[cursor] else "MISS")
-        st.metric("Pulses Reported", int(run.signal_count[cursor]))
         st.divider()
         error_change = relative_improvement(
             runs[BASELINE_KEY].metrics["average_intercept_time_error"],
@@ -661,11 +829,7 @@ def main() -> None:
     render_scorecard(environment, runs, config, strategy_key)
     st.divider()
 
-    title_col, button_col = st.columns([4, 1])
-    with title_col:
-        st.markdown("#### ALGORITHM PERFORMANCE DIAGNOSTICS")
-    with button_col:
-        animate = st.button("COMPUTE DIAGNOSTICS", use_container_width=True)
+    st.markdown("#### ALGORITHM PERFORMANCE DIAGNOSTICS")
 
     labels = [
         "Detection (Pd)",
@@ -683,27 +847,25 @@ def main() -> None:
     ]
     baseline_values = [float(runs[BASELINE_KEY].metrics.get(k, 0.0)) for k in keys]
     candidate_values = [float(run.metrics.get(k, 0.0)) for k in keys]
-    ceiling_value = max(max(baseline_values), max(candidate_values))
 
-    placeholder = st.empty()
-    if animate:
-        for step in range(1, 16):
-            factor = step / 15
-            placeholder.plotly_chart(
-                diagnostics_figure(
-                    labels,
-                    [v * factor for v in baseline_values],
-                    [v * factor for v in candidate_values],
-                    ceiling_value,
-                ),
-                use_container_width=True,
-            )
-            time.sleep(0.03)
-    else:
-        placeholder.plotly_chart(
-            diagnostics_figure(labels, baseline_values, candidate_values, ceiling_value),
-            use_container_width=True,
-        )
+    render_scroll_animated(diagnostics_figure(labels, baseline_values, candidate_values), height=430)
+    st.caption(
+        "Bars grow in when the panel scrolls into view. Raw values are printed on each "
+        "bar: the metrics span two orders of magnitude, so the smaller ones are short by "
+        "nature rather than by omission."
+    )
+
+    st.markdown("#### CUMULATIVE REWARD")
+    render_scroll_animated(
+        reward_figure(
+            runs, [BASELINE_KEY] + ([strategy_key] if strategy_key != BASELINE_KEY else [])
+        ),
+        height=350,
+    )
+    st.caption(
+        "The sweep loses ground steadily on empty dwells; an adaptive scheduler crosses "
+        "into positive reward and keeps climbing."
+    )
 
     st.divider()
 
@@ -773,33 +935,53 @@ def main() -> None:
             use_container_width=True,
             hide_index=True,
             height=425,
+            column_config={
+                "PROBABILITY": st.column_config.NumberColumn(format="%.3f"),
+                "OUTCOME": st.column_config.TextColumn(
+                    help="HIT means the receiver was on a transmitting band and detected it."
+                ),
+            },
         )
 
     st.divider()
 
     st.markdown("#### FIGURES OF MERIT :: SEQUENTIAL VS SMART")
+    merit = pd.DataFrame(
+        [
+            {
+                "METRIC": metric.replace("_", " ").title(),
+                "BETTER WHEN": "lower" if metric in LOWER_IS_BETTER else "higher",
+                "SEQUENTIAL": runs[BASELINE_KEY].metrics.get(metric, float("nan")),
+                "SMART": runs[CANDIDATE_KEY].metrics.get(metric, float("nan")),
+                "IMPROVEMENT": relative_improvement(
+                    runs[BASELINE_KEY].metrics.get(metric, float("nan")),
+                    runs[CANDIDATE_KEY].metrics.get(metric, float("nan")),
+                    metric,
+                )
+                * 100.0,
+                "MEANING": describe_metric(metric),
+            }
+            for metric in HEADLINE_METRICS
+        ]
+    )
     st.dataframe(
-        pd.DataFrame(
-            [
-                {
-                    "METRIC": metric,
-                    "SEQUENTIAL": runs[BASELINE_KEY].metrics.get(metric, float("nan")),
-                    "SMART": runs[CANDIDATE_KEY].metrics.get(metric, float("nan")),
-                    "IMPROVEMENT": relative_improvement(
-                        runs[BASELINE_KEY].metrics.get(metric, float("nan")),
-                        runs[CANDIDATE_KEY].metrics.get(metric, float("nan")),
-                        metric,
-                    ),
-                    "MEANING": describe_metric(metric),
-                }
-                for metric in HEADLINE_METRICS
-            ]
-        ),
+        merit,
         use_container_width=True,
         hide_index=True,
         column_config={
-            "IMPROVEMENT": st.column_config.NumberColumn("IMPROVEMENT", format="%.1f%%")
+            "SEQUENTIAL": st.column_config.NumberColumn(format="%.4f"),
+            "SMART": st.column_config.NumberColumn(format="%.4f"),
+            "IMPROVEMENT": st.column_config.NumberColumn(
+                help="Positive always means Smart Scan is better.", format="%+.1f%%"
+            ),
+            "MEANING": st.column_config.TextColumn(width="large"),
         },
+    )
+    st.download_button(
+        "DOWNLOAD THIS RUN (CSV)",
+        merit.to_csv(index=False).encode("utf-8"),
+        file_name=f"{environment.name.replace(':', '_')}_figures_of_merit.csv",
+        mime="text/csv",
     )
     st.caption(
         "Both strategies ran on this identical environment with identical receiver seeds, "
