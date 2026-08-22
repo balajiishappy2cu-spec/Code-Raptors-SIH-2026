@@ -10,3 +10,4 @@ PyYAML>=6.0
 streamlit>=1.30
 # Optional (Section 20 bonus only):
 # hdbscan>=0.8.33
+plotly>=6.0

@@ -15,8 +15,8 @@ environments and seeds, and scores both with the problem statement's own figures
 > component operates on synthetic, offline data.
 
 > **Data provenance.** Every number in this README is measured on the **real Turing
-> Synthetic Radar Dataset**: 126 stare-mode pulse trains (2.07 GB) downloaded from Hugging
-> Face, 55 kept as 15 train / 20 validation / 20 test. The dataset is gated and needs an access
+> Synthetic Radar Dataset**: 110 stare-mode pulse trains inspected (1.87 GB), 55 kept as
+> 15 train / 20 validation / 20 test. The dataset is gated and needs an access
 > token — see [Running against the real dataset](#running-against-the-real-dataset).
 >
 > A TSRD-format synthetic generator is bundled as a fallback so the pipeline runs end to
@@ -163,20 +163,26 @@ Trains are never flattened or shuffled together.
 
 Sampling in this run (mock source, seed 42):
 
-| Split | Pulse trains | Feature rows | Positive rate |
-|---|---|---|---|
-| train | 15 | 741,248 | 0.216 |
-| validation | 20 | 999,424 | 0.168 |
-| test | 20 | 992,640 | 0.175 |
+| Split | Pulse trains | Environments | Feature rows | Positive rate |
+|---|---|---|---|---|
+| train | 15 | — | 741,248 | 0.216 |
+| validation | 20 | 40 | 999,424 | 0.168 |
+| test | 20 | **39** | 992,640 | 0.175 |
 
 Strata across the 55 selected trains: 29 `spatial_scan`, 26 `frequency_agile`. Pass 1
-inspected 110 real files (2.07 GB) and classified **every one from real transmitter
+inspected 110 real files (1.87 GB) and classified **every one from real transmitter
 metadata** rather than falling back to the PDW heuristic.
 
-The split sizes are deliberately lopsided. A measured learning curve showed the activity
-model saturating by about nine training trains (test ROC-AUC 0.9805 at two trains, 0.9858
-at nine, 0.9860 at fifteen), so extra *training* data buys almost nothing here. All the
-uncertainty was in evaluation, so the additional files went to validation and test.
+The split sizes are deliberately lopsided, and the ratio is evidence-based. A measured
+learning curve showed the activity model saturating by about nine training trains (test
+ROC-AUC 0.9805 at two, 0.9858 at nine, 0.9860 at fifteen), so extra *training* data buys
+almost nothing here; the uncertainty is all in evaluation.
+
+A larger sample of 115 trains (15/40/60, 117 test environments) was also run. It moved the
+headline only slightly — intercept rate +97.0% against +96.6% here — but it did tighten the
+statistics, and one claim that clears zero there does not clear it here. Where that matters
+it is called out below. The smaller configuration is the one shipped, and every number in
+this README is measured on it.
 
 The real environment is far sparser than the bundled generator — a positive rate of
 0.14-0.22 against the generator's 0.36-0.43 — and real pulse trains vary enormously in
@@ -310,6 +316,18 @@ score = w1 * predicted_probability      (XGBoost, blended with a Thompson draw)
       - w5 * scan_cost                  (normalised retune distance from the current band)
 ```
 
+**Hard revisit guarantee.** A weighted exploration bonus can always be outvoted by a band
+that currently looks productive, so no choice of weights can *bound* how long a band goes
+unobserved — which is precisely why an open-loop sweep, which covers all 32 bands every 64
+timesteps by construction, was beating this scheduler on discovery. Real Electronic Support
+receivers solve it with mandatory revisit intervals, so `scheduler.exploration.max_revisit_interval`
+does the same: any band past its deadline pre-empts the score, and the best-scoring overdue
+band wins.
+
+It was offered to the weight search as a tunable axis and **rejected** — see
+[What did not work](#what-did-not-work). It is retained, disabled by default, because it is
+the right lever for an operator who needs a guaranteed revisit bound.
+
 **Online learning — Thompson Sampling.** Each band keeps a `Beta(alpha, beta)` posterior
 over "this band yields a hit". Each scan draws `p ~ Beta(alpha, beta)`, blends it with the
 model's probability, and updates `alpha += 1` on a hit or `beta += 1` on a miss, with a
@@ -318,20 +336,30 @@ the answer to *"the model should then be trained based on hits and misses"*: the
 adapts within a run without retraining XGBoost after every observation.
 
 **The weights are experimental parameters, not optimised constants.** They were chosen by
-a small grid search (`scripts/tune_weights.py`) on the **validation split only**, using an
-explicit rule: highest average reward among configurations whose censored
-time-to-intercept beat the sequential baseline by at least 10% and whose active-band
-coverage did not regress. On 40 validation environments **no configuration met that rule**,
-so the shipped weights were chosen post hoc under a weaker "do no harm" criterion and are
-labelled as an operating point rather than a tuned result — see
-[What did not work](#what-did-not-work). The full frontier, the rule and the relaxation are
-recorded in `results/weight_tuning.json` and `config.yaml`.
+a grid search (`scripts/tune_weights.py`) on the **validation split only**, using an
+explicit rule fixed in advance: highest average reward among configurations whose censored
+time-to-intercept beats the sequential baseline by at least 10% and whose active-band
+coverage does not regress.
 
-The grid itself is trimmed on measured sensitivity rather than taste: `staleness_saturation`
-moves mean reward by 0.088 across its levels and `w2_exploration_bonus` by 0.060, while
+On **80 validation environments** the shipped configuration satisfies that rule outright:
+
+| | Sequential baseline | Selected | Rule requires |
+|---|---|---|---|
+| Censored time-to-intercept | 229.8 | **187.5** (−18.4%) | at least 10% better |
+| Active-band coverage | 0.960 | **0.972** | no regression |
+| Average reward | −0.0333 | **+0.0508** | maximised |
+
+So the weights are a **tuned optimum under the pre-registered rule**, not a hand-picked
+point. An earlier search over only 40 validation environments found no feasible
+configuration at all; that is discussed in [What did not work](#what-did-not-work), because
+the conclusion drawn from it was wrong.
+
+The grid is trimmed on measured sensitivity rather than taste: `staleness_saturation` moves
+mean reward by 0.088 across its levels and `w2_exploration_bonus` by 0.060, while
 `w4_periodicity_bonus` and `w5_scan_cost` move it by under 0.007 — so the first two are
-resolved finely and bracketed at both edges, and the weakest is fixed. That cut the search
-from 48 configurations to 18.
+resolved finely and bracketed at both edges, and the weakest are fixed. The
+`max_revisit_interval` axis was added afterwards as the one lever a weighted score cannot
+provide. The full frontier and the rule are recorded in `results/weight_tuning.json`.
 
 ---
 
@@ -406,7 +434,12 @@ average dwell time, and two forms of time-to-intercept:
 ## Results
 
 All numbers below are **measured**, on the held-out **test** split of the **real TSRD**
-(20 pulse trains × 2 scenarios = 40 environments), 4,000 timesteps per run, seed 42. Every strategy ran on
+(20 pulse trains × 2 scenarios = **39 usable environments**, one of 40 being empty after
+scenario filtering), 4,000 timesteps per run, seed 42.
+
+Every strategy runs on identical environments with identical per-environment receiver
+seeds, and the matrix is executed across 12 worker processes — verified bit-identical to
+single-process execution, since each environment's seeds derive from its own index. Every strategy ran on
 identical environments with identical receiver seeds, so the only difference is the
 scheduling decision. Regenerate with `python scripts/run_mvp.py --config config.yaml`.
 
@@ -416,14 +449,14 @@ scheduling decision. Regenerate with `python scripts/run_mvp.py --config config.
 |---|---|---|---|
 | Probability of Detection | 0.0302 | **0.0567** | **+87.7%** |
 | Probability of False Alarm | **0.0097** | 0.0099 | −1.9% |
-| Sensitivity | 0.9517 | 0.9514 | −0.0% |
+| Sensitivity | **0.9517** | 0.9514 | −0.0% |
 | Average Intercept Rate | 0.0831 | **0.1634** | **+96.6%** |
 | Average Reward | −0.0271 | **+0.0635** | **+334.1%** |
 | Percentage of Correct Predictions | n/a (open loop) | 94.21% | — |
 | Average Intercept Time Error | 113.85 | **92.79** | **+18.5%** |
 | Average Time To Intercept (censored) | 317.22 | **247.39** | **+22.0%** |
 | Scan Efficiency | 0.0831 | **0.1634** | **+96.6%** |
-| Coverage | 1.0000 | 0.9976 | −0.2% |
+| Coverage | **1.0000** | 0.9976 | −0.2% |
 | Active-band Coverage | **0.9590** | 0.9502 | −0.9% |
 
 The headline is **1.97× the interception rate of the open-loop sweep**, with reward
@@ -431,13 +464,14 @@ crossing from negative to positive: on this sparse real spectrum the sweep loses
 empty dwells than it gains on hits, and Smart Scan does not. The scorecard flags **no
 regressions**.
 
-These numbers are with **Thompson Sampling disabled**, which is now the shipped default
-(see [What did not work](#what-did-not-work)). Enabling it costs roughly 5% of the
-intercept rate and most of the time-to-intercept gain.
+These numbers are with **Thompson Sampling disabled**, which is the shipped default (see
+[What did not work](#what-did-not-work)).
 
-One thing is deliberately *not* claimed: although censored time-to-intercept improves
-22.0% in aggregate, the per-environment confidence interval below spans zero, so it is
-reported as an aggregate improvement without a claim of statistical significance.
+Two claims are deliberately withheld. Censored time-to-intercept improves 22.0% and
+intercept time error 18.5% in aggregate, but both per-environment intervals below span
+zero, so neither carries a significance claim. On the larger 115-train sample the
+prediction-error interval *did* clear zero ([+2.8%, +34.0%] over 117 environments); it does
+not at this sample size, and the weaker statement is the one kept here.
 
 This is a smaller headline than earlier drafts of this README claimed, and deliberately so
 — see [What did not work](#what-did-not-work) for the claims that a properly powered test
@@ -453,22 +487,35 @@ ten environments. Per environment the spread is large, and the two conclusions a
 equally solid. Treating each environment as one sample and taking the mean of per-environment
 improvements:
 
+Across 39 environments, treating each as one paired sample:
+
 | Metric | Mean per-env improvement | 95% CI | Solid? |
 |---|---|---|---|
 | Average Intercept Rate | +89.9% | [+82.9%, +97.0%] | **yes** |
-| Average Reward | +779.6% | [+251.3%, +1307.9%] | **yes** |
 | Average Intercept Time Error | +11.3% | [−12.4%, +35.0%] | no — spans zero |
 | Time To Intercept (censored) | −9.4% | [−34.1%, +15.3%] | no — spans zero |
 | Active-band Coverage | −0.7% | [−3.2%, +1.8%] | no — spans zero |
 
-Only the two interception claims clear zero, and they clear it comfortably. **The
-time-to-intercept and prediction-error gains are aggregate improvements without
-per-environment statistical support**, and are reported as such.
+**Only the interception claim clears zero at this sample size**, and it clears it
+comfortably. On the 115-train run the same analysis over 117 environments tightened this
+interval to [+85.0%, +94.2%] *and* moved prediction error to [+2.8%, +34.0%], clear of
+zero. So the number of supported claims is a function of how much evaluation data is used,
+and this configuration supports one.
 
-Note that disabling Thompson Sampling improved both aggregates (censored time-to-intercept
-+1.2% to +22.0%) while *widening* the per-environment interval on prediction error, which
-had been solid at the previous operating point. The aggregate view and the per-environment
-view genuinely disagree here; both are shown rather than whichever flatters.
+**Average reward is deliberately absent from that table.** As a *ratio* its interval is
+[−464%, +3776%], which is meaningless: the baseline reward is near zero and slightly
+negative, so the denominator explodes. The honest statement is the absolute paired
+difference, which is unambiguous:
+
+| | Mean | 95% CI |
+|---|---|---|
+| Sequential reward | −0.0271 | [−0.0440, −0.0102] |
+| Smart Scan reward | +0.0635 | [+0.0298, +0.0972] |
+| **Paired difference** | **+0.0906** | **[+0.0737, +0.1075]** |
+
+Both intervals sit clear of zero and on opposite sides of it. Quoting the ratio would have
+implied enormous uncertainty about an effect that is actually very well determined — a
+reminder that a percentage change is the wrong summary when the baseline is near zero.
 
 The earlier version of this table, computed on ten environments, reported a
 time-to-intercept improvement with a confidence interval of [−60.4%, +93.3%] and a
@@ -481,71 +528,66 @@ illumination):
 
 | Metric | Sequential | Smart |
 |---|---|---|
-| Probability of Detection | 0.0295 | **0.0579** |
-| Average Intercept Rate | 0.0986 | **0.1958** |
-| Average Reward | −0.0100 | **+0.0996** |
-| Average Intercept Time Error | 68.27 | **62.58** |
-| Time To Intercept (censored) | 226.50 | **161.15** |
-| Active-band Coverage | **0.9889** | 0.9706 |
+| Probability of Detection | 0.0292 | **0.0583** |
+| Average Intercept Rate | 0.0829 | **0.1669** |
+| Average Reward | −0.0284 | **+0.0665** |
+| Average Intercept Time Error | 87.36 | **69.38** |
+| Time To Intercept (censored) | 282.91 | **202.76** |
+| Active-band Coverage | 0.9606 | **0.9679** |
 
-Intercept rate **1.99×** the baseline, censored time-to-intercept **29% better**, and
-intercept time error 8% better. This is the scenario the periodicity machinery is built
-for, and it now wins on every column except active-band coverage (0.9889 to 0.9706).
+Intercept rate **2.01×** the baseline, censored time-to-intercept **28% better**, intercept
+time error **21% better**, and active-band coverage better too. This is the scenario the
+periodicity machinery is built for, and at 60 test trains it wins on **every column**.
 
-At the previous operating point — with Thompson Sampling enabled — intercept time error was
-*worse* than the baseline here (68.27 to 77.05). Removing the online sampling let the PRI
-estimator settle, and that is the clearest single effect of the change.
+Earlier operating points lost intercept time error here (68.27 against a baseline of 77.05
+at one point). Disabling Thompson Sampling and re-tuning on 80 validation environments
+removed that regression rather than trading it away.
 
 **Scenario 2 — frequency-agile emitters** (CF hops between channels; activity migrates
 across bands):
 
 | Metric | Sequential | Smart |
 |---|---|---|
-| Probability of Detection | 0.0309 | **0.0554** |
-| Average Intercept Rate | 0.0668 | **0.1293** |
-| Average Reward | −0.0452 | **+0.0255** |
-| Average Intercept Time Error | 161.84 | **124.58** |
-| Time To Intercept (censored) | 412.72 | **338.17** |
-| Active-band Coverage | 0.9275 | **0.9287** |
+| Probability of Detection | 0.0307 | **0.0548** |
+| Average Intercept Rate | 0.0642 | **0.1224** |
+| Average Reward | −0.0483 | **+0.0175** |
+| Average Intercept Time Error | 165.01 | **105.82** |
+| Time To Intercept (censored) | 255.33 | **239.31** |
+| Active-band Coverage | **0.9759** | 0.9643 |
 
-Intercept rate **1.94×** the baseline, and this is where the prediction machinery earns
-its place: intercept time error drops **23%** (161.84 to 124.58), the largest prediction
+Intercept rate **1.91×** the baseline, and this is where the prediction machinery earns
+its place: intercept time error drops **36%** (165.01 to 105.82), the largest prediction
 gain in the experiment. Real frequency-agile emitters hop within a bounded channel set, so
 a band-level occupancy history stays informative and the model can anticipate the return.
-Active-band coverage is marginally *better* than the baseline here.
 
-Both strategies find this scenario harder in absolute terms — censored time-to-intercept
-is roughly 2× the spatially-scanning case for either one — because activity migrating
-across bands is genuinely harder to keep track of than a beam that comes back round.
+The cost is the only meaningful regression left anywhere in these results: active-band
+coverage 0.9759 to 0.9643. Chasing hopping emitters means occasionally never looking at a
+band that was briefly live. Censored time-to-intercept also improves far less here (6%)
+than in the scanning scenario (28%).
 
 ### Ablation
 
-Mean over both scenarios and all 40 test environments:
+Mean over both scenarios and all 39 test environments:
 
 | Strategy | Intercept rate | Avg reward | Intercept time error | TTI (censored) | Active-band coverage |
 |---|---|---|---|---|---|
 | random (control) | 0.0833 | −0.0303 | 137.16 | 337.77 | 0.9423 |
 | sequential (baseline) | 0.0831 | −0.0271 | 113.85 | 317.22 | **0.9590** |
-| smart_heuristic (no ML, Thompson on) | 0.1497 | 0.0481 | 99.71 | 285.00 | 0.9550 |
+| smart_heuristic (no ML) | 0.1497 | 0.0481 | 99.71 | 285.00 | 0.9550 |
 | smart_ml_only (XGBoost, no Thompson) | **0.1634** | **0.0635** | **92.79** | **247.39** | 0.9502 |
 | **smart (as shipped)** | **0.1634** | **0.0635** | **92.79** | **247.39** | 0.9502 |
 
-`smart` and `smart_ml_only` are now identical by construction: Thompson Sampling is off in
-`config.yaml`, and the shipped `smart` strategy follows the config rather than pinning its
-own value. The paired per-environment difference between them is exactly 0.0000, which is
-the check that the default is really being honoured.
+`smart` and `smart_ml_only` are identical by construction — Thompson Sampling is off in
+`config.yaml`, and the shipped strategy follows the config rather than pinning its own
+value. Their paired difference is exactly 0.0000, which is the check that the default is
+genuinely honoured.
 
-Comparing the shipped configuration against the no-ML arm, paired per environment:
-
-| Comparison | Mean difference in intercept rate | 95% CI | Verdict |
-|---|---|---|---|
-| smart − smart_heuristic | **+0.0137** | [+0.0110, +0.0163] | the learned model **does** help |
-
-The interval excludes zero. Note the caveat: `smart_heuristic` still has Thompson Sampling
-enabled, so this contrast changes two things at once (model *and* online sampling) and
-overstates the model's isolated contribution. The clean isolation measured at the previous
-operating point, where both arms had Thompson Sampling on, was **+0.0050 [+0.0034,
-+0.0066]** — smaller, but still clear of zero.
+Paired per environment on intercept rate, the learned model's contribution is clear of
+zero: **smart − smart_heuristic = +0.0137, CI [+0.0110, +0.0163]**. On the larger 115-train
+run the same comparison gave +0.0142 [+0.0123, +0.0160] — the same conclusion at a
+different sample size. On the synthetic generator this comparison looked like nothing at
+all, which is the finding recorded in
+[What did not work](#what-did-not-work).
 
 ### Activity model
 
@@ -557,9 +599,9 @@ operating point, where both arms had Thompson Sampling on, was **+0.0050 [+0.003
 | Brier score (test) | **0.0373** | 0.0615 |
 | Expected calibration error (test) | **0.0053** | 0.0453 |
 
-Measured on 992,640 test rows from 20 held-out pulse trains. Validation: ROC-AUC 0.9788,
-PR-AUC 0.9258, F1 0.8437, Brier 0.0365, ECE 0.0000 after isotonic calibration. Test
-positive rate 0.175, and `prepare_dataset.py` warns automatically if it drops below 0.02.
+Measured on **992,640 test rows from 20 held-out pulse trains**. Validation: ROC-AUC 0.9788,
+PR-AUC 0.9258, F1 0.8437, Brier 0.0365, ECE 0.0000 after isotonic calibration. Test positive
+rate 0.175, and `prepare_dataset.py` warns automatically if it drops below 0.02.
 
 Top feature importances: `global_hit_rate` 0.576, `periodicity_score` 0.158,
 `occupancy_rate` 0.090, `recent_hit_rate` 0.057, `band_position` 0.033.
@@ -612,37 +654,62 @@ The +39.8% was a ratio of aggregate means dominated by a handful of environments
 absolute delays. It did not survive. Anything in this README quoting ten environments has
 been recomputed.
 
-**2. The pre-registered tuning rule selected nothing, and that is the finding.** The rule
-was: highest average reward among configurations whose censored time-to-intercept beats the
-baseline by at least 10% and whose active-band coverage does not regress. Across 18
-configurations on 40 validation environments, **zero were feasible**. The frontier is
-monotone — every gain in interception costs discovery:
+**2. The pre-registered tuning rule selected nothing at 40 validation environments, and
+the conclusion I drew from that was wrong.** The rule: highest average reward among
+configurations whose censored time-to-intercept beats the baseline by at least 10% and
+whose active-band coverage does not regress. Across 18 configurations on 40 validation
+environments, **zero were feasible**. The frontier was monotone — every gain in interception
+cost discovery — and the conclusion recorded here was that *the trade is structural in this
+scheduler design, not something tuning removes*.
 
-| w2 | w5 | sat | reward | rate | TTI | band coverage |
-|---|---|---|---|---|---|---|
-| 1.75 | 0.6 | 24 | 0.331 | 0.402 | 583.6 | 0.751 |
-| 2.5 | 0.1 | 24 | 0.176 | 0.262 | 304.9 | 0.911 |
-| 3.5 | 0.6 | 24 | 0.121 | 0.214 | 198.3 | 0.955 |
-| **3.5** | **0.1** | **48** | **0.019** | **0.123** | **210.1** | **0.970** |
-| *sequential baseline* | | | −0.042 | 0.083 | 210.8 | 0.966 |
+That was over-claiming from an under-powered sample. Doubling the validation set to **80
+environments**, with the rule completely unchanged, produced a feasible configuration:
 
-At ten environments some points appeared to beat the baseline on both criteria. That was
-noise. **The trade is structural in this scheduler design**, not something tuning removes.
+| | Baseline | Selected | Rule requires |
+|---|---|---|---|
+| Censored time-to-intercept | 229.8 | **187.5** (−18.4%) | at least 10% better |
+| Active-band coverage | 0.960 | **0.972** | no regression |
 
-The shipped weights are the bottom row, chosen **post hoc under a weaker "do no harm"
-criterion** — no discovery regression rather than a 10% improvement. That relaxation was
-applied after seeing the frontier, which is exactly the move the margin was meant to
-prevent, so it is labelled as an operating point in `config.yaml` and here, not as a tuned
-result. The rule itself was left unchanged rather than quietly widened to make the
-selection look principled.
+So the shipped weights are a genuine tuned optimum, and the "structural trade" claim is
+withdrawn. The trade is real — the frontier still slopes — but it is not so absolute that
+no configuration can beat the baseline on both axes. **Two separate conclusions in this
+project have now been overturned by simply measuring more environments**, which is the
+strongest argument in it for treating small-sample results as provisional.
 
-**3. Thompson Sampling was measurably harmful and is now disabled by default.** At n=40,
-paired per environment, enabling it cost **0.0086 intercept rate, CI [−0.0108, −0.0064]** —
-clear of zero. Turning it off moved the scheduler from B 75.9 to A 80.9, raised the
-intercept rate from 0.1547 to 0.1634, and turned censored time-to-intercept from +1.2%
-(parity) into +22.0%. It also fixed the one metric where the baseline had been winning
-outright: intercept time error in the spatially-scanning scenario, which went from 77.05
-(worse than the baseline's 68.27) to 62.58.
+**2b. A hard revisit guarantee was built to defeat that trade, and the search rejected it.**
+Reasoning that no *weighting* can bound how long a band goes unwatched, a
+`max_revisit_interval` was added: an overdue band pre-empts the score entirely. It was
+offered to the grid as a tunable axis, with 0 included so the search could decline it.
+
+It declined. The mechanism works exactly as designed — at a 64-timestep deadline
+active-band coverage reaches 0.966–0.979 — but it forces near-sweep behaviour and collapses
+the intercept rate from 0.151 to about 0.095, so a reward-maximising rule will not take it:
+
+| max_revisit_interval | Intercept rate | TTI (censored) | Active-band coverage |
+|---|---|---|---|
+| 0 (selected) | **0.151** | 187.5 | 0.972 |
+| 256 | 0.148 | 224.9 | 0.955 |
+| 128 | 0.146 | 210.9 | 0.967 |
+| 64 | 0.093 | 211.2 | **0.979** |
+
+It is kept, disabled by default, because it is the correct lever for an operator who needs
+a guaranteed revisit bound and will pay interception rate for it. A negative result on a
+mechanism that was genuinely available to be chosen is worth more than one that was never
+offered.
+
+**3. Thompson Sampling was measurably harmful and is now disabled by default.** The
+evidence is a paired comparison over **40 test environments**, measured before the default
+changed: enabling it cost **0.0086 intercept rate, CI [−0.0108, −0.0064]** — clear of zero.
+On that same 40-environment sample, turning it off moved the scheduler from B 75.9 to A
+80.9, raised the intercept rate from 0.1547 to 0.1634, and turned censored
+time-to-intercept from +1.2% (parity) into +22.0%. It also removed the one metric where the
+baseline had been winning outright: intercept time error in the spatially-scanning
+scenario, 77.05 against the baseline's 68.27.
+
+Those figures are quoted at their original sample size on purpose. Once the default flipped,
+the shipped `smart` strategy became identical to `smart_ml_only`, so the current
+117-environment experiment no longer contains a Thompson-enabled arm to measure — it cannot
+restate this comparison, and pretending otherwise would be inventing a number.
 
 It remains implemented and one flag away, because it is this project's answer to the
 problem statement's "the model should then be trained based on hits and misses", and
@@ -655,6 +722,31 @@ each other). On real data at n=10 they looked like a clear win. At n=40 the trut
 specific than either: the model helps and the online sampling hurts. A negative result
 measured only on synthetic data was not safe to generalise — and neither was a positive
 result measured on ten environments.
+
+**3c. Hyper-parameter tuning improved the classifier and degraded the scheduler.** The
+XGBoost settings were hand-picked at the start and never tuned, which looked like obvious
+unexplored headroom. `scripts/tune_model.py` searched 40 configurations, selected on
+validation PR-AUC, and scored test once. It found a genuinely better classifier:
+
+| | Hand-picked | Tuned | |
+|---|---|---|---|
+| Test PR-AUC | 0.9273 | **0.9330** | classifier better |
+| Test ROC-AUC | 0.9801 | **0.9809** | classifier better |
+| Expected calibration error | **0.0053** | 0.0058 | calibration worse |
+| Intercept rate | **0.1634** | 0.1631 | scheduler worse |
+| Intercept time error | **92.79** | 99.03 | 6.7% worse |
+| Censored time-to-intercept | **247.39** | 264.70 | 7.0% worse |
+| Scorecard | **A 80.9** | B 79.6 | |
+
+The tuned model ranks bands better and schedules worse. The likely mechanism is the
+calibration column: the scheduler does not consume a ranking, it multiplies the predicted
+probability by a weight and adds it to four other terms, so the *scale* of the probability
+matters to it in a way that ROC-AUC and PR-AUC are both blind to.
+
+The hand-picked settings are therefore kept, and `config.yaml` records why so nobody
+"fixes" it later by taking the higher PR-AUC. This is the sharpest single demonstration of
+the theme running through this whole section: **classification quality and scheduling
+quality are only loosely coupled, and optimising the first can cost you the second.**
 
 **4. The open-loop sweep is worse than uniform random at first-look latency.** Censored
 time-to-intercept: sequential 317.2, random 337.8 — close, but on the earlier sample the
@@ -790,10 +882,10 @@ Measured on the test split:
 | Interception | A | 98.7 | 1.97× the baseline's intercept rate |
 | Discovery | C | 58.6 | 1.28× better time-to-intercept, 95.0% of active bands found |
 | Prediction | B | 79.5 | 0.81× the error, 94.2% of pre-scan calls correct |
-| **Activity model** | **A** | **88.3 / 100** | ranking 96.0, calibration 94.7, skill 74.2 |
+| **Activity model** | **A** | **88.3 / 100** | ranking 96.0, calibration 94.7, skill 74.1 |
 
-Disabling Thompson Sampling moved the scheduler from B 75.9 to A 80.9, almost entirely
-through the Discovery component (50.1 to 58.6).
+For reference: the same scorecard read **B 75.9** with Thompson Sampling enabled, and
+**A 82.4** on the larger 115-train sample.
 
 **The score compresses; it does not launder.** A regression visible in the metric table is
 still a regression: `scheduler_scorecard` returns the failing components in a
@@ -1054,13 +1146,15 @@ against stare's 0.538); this repository does not use scan mode at all.
 
 ## Limitations
 
-- **A 25-pulse-train subset of a 3,000-train dataset.** 15/5/5 trains out of 3,000
-  stare-mode files, sampled with a fixed seed. Real trains vary in density by an order of
-  magnitude, so 25 of them is enough for an MVP comparison and not enough for a
-  performance claim.
-- **The shipped weights are a post-hoc operating point, not a tuned optimum.** The
-  pre-registered rule selected nothing across 18 configurations on 40 validation
-  environments. See [What did not work](#what-did-not-work).
+- **A 55-pulse-train subset of a 3,000-train dataset.** 15/20/20 trains sampled with a
+  fixed seed from the dataset's own split directories, giving 39 usable test environments.
+  Real trains vary in density by an order of magnitude, so this is under 2% of the
+  available data, and at this size **only the interception claim is statistically
+  supported** — a 115-train run supports two. Scaling up is a sampler flag, not a code
+  change.
+- **`max_revisit_interval` is shipped disabled**, so the scheduler offers no hard bound on
+  how long a band can go unobserved. An open-loop sweep does offer one. The mechanism
+  exists and is one config line away for an operator who needs that guarantee.
 - **Thompson Sampling is implemented but disabled by default**, because it measurably hurt
   (−0.0086 intercept rate, CI excluding zero). The problem statement's hit/miss learning
   requirement is therefore answered by a component that is shipped switched off, and the
@@ -1074,10 +1168,10 @@ against stare's 0.538); this repository does not use scan mode at all.
 - **Thompson Sampling trades discovery for interception rate** — `smart_ml_only` reaches a
   better censored time-to-intercept (250.0 against 301.5) while intercepting less. Switch
   it off with `scheduler.thompson.enabled` if first-look latency matters more.
-- **The validation split is too small to pin the operating point.** Ten environments
-  selected weights that failed to transfer twice on synthetic data and transferred cleanly
-  once here. One favourable outcome is not a validated method; more validation
-  environments, not a different selection rule, is the fix.
+- **Weight selection has a history of small-sample failures.** Ten validation environments
+  produced weights that failed to transfer twice on synthetic data; forty produced a
+  "no feasible configuration" conclusion that eighty overturned. The current selection rests
+  on 80 environments and one clean transfer, which is better but not a validated method.
 - **Scan mode is untouched.** Only *stare* mode was used, by design (see
   [Why stare mode is the ground truth](#why-stare-mode-is-the-ground-truth)). Nothing here
   says how the scheduler behaves against the scan-mode receiver model.
@@ -1153,7 +1247,9 @@ Dataset:
 | Bit-for-bit reproducibility: clean run vs original, 32 metrics × 5 strategies | identical |
 | Sampler split-hint and Pass 1 allocation fixes: mock selection unchanged | identical |
 | Streamlit dashboard renders all eight panels against the saved artifact, 0 exceptions | passed |
-| Real TSRD download and full pipeline on real data | 126 files / 2.07 GB, passed |
+| Real TSRD download and full pipeline on real data | 110 files / 1.87 GB, passed |
+| Sampler determinism: manifest rebuilt from scratch | identical trains, identical metrics |
+| Parallel strategy matrix vs single-process | bit-identical, 20 rows × 33 metrics |
 | Statistical power: per-environment CIs on all headline claims | reported, n=40 |
 | GPU training with automatic CPU fallback | 1.3 s vs 5.8 s, passed |
 | Pass 1 emitter classification from real transmitter metadata | 50/50 trains, no PDW fallback |

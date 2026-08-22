@@ -286,3 +286,90 @@ def test_describe_reports_the_configuration() -> None:
     assert described["name"] == "smart"
     assert described["predictor"] == "heuristic"
     assert described["weights"]["w1_predicted_probability"] == 1.0
+
+
+def test_revisit_interval_forces_an_overdue_band() -> None:
+    """A band past its revisit deadline must pre-empt a higher-scoring fresh band."""
+    cfg = scheduler_cfg(w1_predicted_probability=1.0)
+    cfg["exploration"]["max_revisit_interval"] = 20
+    probabilities = np.array([0.99, 0.1, 0.1, 0.1, 0.1, 0.1])
+    scheduler = SmartScanScheduler(
+        n_bands=N_BANDS,
+        rng=np.random.default_rng(20),
+        predictor=StubPredictor(probabilities),
+        scheduler_cfg=cfg,
+    )
+    tracker = make_tracker()
+    # Band 0 looks best and was just seen; band 3 is overdue and must win anyway.
+    for band in range(N_BANDS):
+        tracker.update(band=band, timestep=95 if band != 3 else 10, hit=False)
+    assert scheduler.select_band(100, tracker) == 3
+    assert scheduler.last_decision["forced_revisit"] is True
+
+
+def test_revisit_interval_picks_the_best_among_overdue_bands() -> None:
+    cfg = scheduler_cfg(w1_predicted_probability=1.0)
+    cfg["exploration"]["max_revisit_interval"] = 20
+    probabilities = np.array([0.1, 0.2, 0.9, 0.3, 0.1, 0.1])
+    scheduler = SmartScanScheduler(
+        n_bands=N_BANDS,
+        rng=np.random.default_rng(21),
+        predictor=StubPredictor(probabilities),
+        scheduler_cfg=cfg,
+    )
+    tracker = make_tracker()
+    # Bands 2 and 3 are both overdue; band 2 scores higher, so it should win.
+    for band in range(N_BANDS):
+        tracker.update(band=band, timestep=95 if band not in (2, 3) else 10, hit=False)
+    assert scheduler.select_band(100, tracker) == 2
+
+
+def test_no_forced_revisit_when_nothing_is_overdue() -> None:
+    cfg = scheduler_cfg(w1_predicted_probability=1.0)
+    cfg["exploration"]["max_revisit_interval"] = 500
+    probabilities = np.array([0.1, 0.95, 0.1, 0.1, 0.1, 0.1])
+    scheduler = SmartScanScheduler(
+        n_bands=N_BANDS,
+        rng=np.random.default_rng(22),
+        predictor=StubPredictor(probabilities),
+        scheduler_cfg=cfg,
+    )
+    tracker = make_tracker()
+    for band in range(N_BANDS):
+        tracker.update(band=band, timestep=99, hit=False)
+    assert scheduler.select_band(100, tracker) == 1
+    assert scheduler.last_decision["forced_revisit"] is False
+
+
+def test_revisit_disabled_by_zero_leaves_scoring_untouched() -> None:
+    cfg = scheduler_cfg(w1_predicted_probability=1.0)
+    cfg["exploration"]["max_revisit_interval"] = 0
+    probabilities = np.array([0.99, 0.1, 0.1, 0.1, 0.1, 0.1])
+    scheduler = SmartScanScheduler(
+        n_bands=N_BANDS,
+        rng=np.random.default_rng(23),
+        predictor=StubPredictor(probabilities),
+        scheduler_cfg=cfg,
+    )
+    tracker = make_tracker()
+    for band in range(N_BANDS):
+        tracker.update(band=band, timestep=95 if band != 3 else 10, hit=False)
+    assert scheduler.select_band(100, tracker) == 0
+
+
+def test_never_visited_bands_count_as_overdue() -> None:
+    cfg = scheduler_cfg(w1_predicted_probability=1.0)
+    cfg["exploration"]["max_revisit_interval"] = 20
+    probabilities = np.array([0.99, 0.1, 0.1, 0.1, 0.1, 0.1])
+    scheduler = SmartScanScheduler(
+        n_bands=N_BANDS,
+        rng=np.random.default_rng(24),
+        predictor=StubPredictor(probabilities),
+        scheduler_cfg=cfg,
+    )
+    tracker = make_tracker()
+    # Every band seen except band 4, which has never been visited at all.
+    for band in range(N_BANDS):
+        if band != 4:
+            tracker.update(band=band, timestep=99, hit=False)
+    assert scheduler.select_band(100, tracker) == 4

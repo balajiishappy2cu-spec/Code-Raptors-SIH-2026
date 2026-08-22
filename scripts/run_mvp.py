@@ -41,7 +41,11 @@ from evaluation.scorecard import (  # noqa: E402
     oracle_ceiling,
     scheduler_scorecard,
 )
-from simulation.scenarios import SCENARIO_LABELS, build_scenarios_for_split  # noqa: E402
+from simulation.scenarios import (  # noqa: E402
+    SCENARIO_LABELS,
+    build_scenarios_for_split,
+    pick_demo_scenario,
+)
 from visualization import plots  # noqa: E402
 
 LOGGER = get_logger("scripts.run_mvp")
@@ -72,15 +76,23 @@ def make_figures(
     scenarios_by_name: dict[str, list],
     *,
     heatmap_window: int,
+    demo_indices: dict[str, int] | None = None,
 ) -> list[str]:
-    """Generate every figure for the experiment and return their paths."""
+    """Generate every figure for the experiment and return their paths.
+
+    Args:
+        demo_indices: which environment to illustrate per scenario. Defaults to the first,
+            which is usually the wrong choice -- see :func:`pick_demo_scenario`.
+    """
     figures_dir = config.path_for("paths.figures_dir")
     written: list[str] = []
+    demo_indices = demo_indices or {}
 
     for scenario_name, scenario_list in scenarios_by_name.items():
         if not scenario_list:
             continue
-        environment = scenario_list[0].environment
+        demo_index = demo_indices.get(scenario_name, 0)
+        environment = scenario_list[demo_index].environment
         runs = [
             result.runs[key]
             for key in (f"{scenario_name}:{BASELINE_KEY}", f"{scenario_name}:{CANDIDATE_KEY}")
@@ -266,8 +278,27 @@ def main(argv: list[str] | None = None) -> int:
         LOGGER.error("No scenario environments were built; run scripts/sample_dataset.py first")
         return 1
 
+    # Choose which environment each scenario's figures should illustrate before running,
+    # so the matrix retains that environment's runs rather than the first one's.
+    demo_indices: dict[str, int] = {}
+    for scenario_name, scenario_list in scenarios_by_name.items():
+        index, chosen = pick_demo_scenario(scenario_list)
+        if index is not None:
+            demo_indices[scenario_name] = index
+            LOGGER.info(
+                "Figures for %s will use %s (%d active bands, occupancy %.3f)",
+                scenario_name,
+                chosen.environment.name,
+                int((chosen.environment.active.sum(axis=0) > 0).sum()),
+                chosen.environment.occupancy,
+            )
+
     result = run_strategy_matrix(
-        config, scenarios_by_name, strategies=DEFAULT_STRATEGIES, n_timesteps=horizon
+        config,
+        scenarios_by_name,
+        strategies=DEFAULT_STRATEGIES,
+        n_timesteps=horizon,
+        keep_runs_for=demo_indices,
     )
 
     results_dir = config.path_for("paths.results_dir")
@@ -307,7 +338,11 @@ def main(argv: list[str] | None = None) -> int:
     figures: list[str] = []
     if not args.no_figures:
         figures = make_figures(
-            config, result, scenarios_by_name, heatmap_window=args.heatmap_window
+            config,
+            result,
+            scenarios_by_name,
+            heatmap_window=args.heatmap_window,
+            demo_indices=demo_indices,
         )
     record["figures"] = figures
     write_json(results_dir / "experiment_results.json", record)

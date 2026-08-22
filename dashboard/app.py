@@ -1,11 +1,14 @@
-"""Streamlit dashboard for the Smart Scan Electronic Support scheduler.
+"""Tactical console dashboard for the Smart Scan Electronic Support scheduler.
 
-The page is built to be readable by someone who has not seen the code. Every number
-carries a plain-English explanation, the scores state the formula that produced them, and
-the scheduler's own decision is broken into the weighted terms that caused it.
+The visual language follows the Code-Raptors SIH 2026 front end: a dotted-grid ground,
+monospace type, neon-green readouts, cyan accents, banner header and footer. Everything
+visual is defined in :mod:`dashboard.theme` so this module stays about the data.
 
-Sections: Scorecard, Environment, Current receiver, Spectrum, Performance, Comparison,
-Explainability, Glossary.
+Unlike the reference, which renders a single pre-baked ``mock_run.json``, this console
+runs the real simulation live against the sampled Turing dataset and re-runs whenever a
+control changes. That brings in things the reference had no data for -- a graded
+scorecard, the interception ceiling, per-metric explanations and the ablation arms -- and
+those are added in the same idiom rather than bolted on.
 
 Run with::
 
@@ -19,17 +22,20 @@ Electronic Support (passive) only.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from common.config import Config, make_rng  # noqa: E402
 from common.io_utils import read_json  # noqa: E402
+from dashboard import theme  # noqa: E402
 from dataio.manifest import DatasetManifest  # noqa: E402
 from evaluation.compare_strategies import (  # noqa: E402
     BASELINE_KEY,
@@ -52,38 +58,33 @@ from evaluation.scorecard import (  # noqa: E402
 )
 from simulation.runner import SimulationRun, run_simulation  # noqa: E402
 from simulation.scenarios import SCENARIO_LABELS, build_scenario  # noqa: E402
-from visualization.plots import decision_timeline_table  # noqa: E402
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 
-#: Colour used for a grade badge.
-GRADE_COLOURS = {"A": "#1a7f37", "B": "#2f7d32", "C": "#b26a00", "D": "#c25b00", "E": "#d1242f"}
-
 #: Plain-English meaning of each term in the scheduler's weighted score.
 SCORE_TERM_HELP = {
-    "predicted probability": (
-        "The activity model's calibrated estimate that this band will transmit in the "
-        "next few timesteps, blended with a Thompson Sampling draw from what the receiver "
-        "has learned about this band during the run."
+    "Predicted Activity": (
+        "The activity model's calibrated estimate that this band transmits in the next "
+        "few cycles, from the receiver's own observation history."
     ),
-    "exploration bonus": (
-        "Grows the longer a band has gone unobserved. This is what stops the scheduler "
-        "camping on a few known-busy bands and losing track of the rest of the spectrum."
+    "Exploration Bonus": (
+        "Grows the longer a band has gone unobserved. Stops the scheduler camping on a "
+        "few known-busy bands and losing track of the rest of the spectrum."
     ),
-    "recency bonus": (
-        "Rewards a band that produced a detection recently, on the assumption that an "
-        "emitter just seen is probably still there."
+    "Recency Bonus": "Rewards a band that produced a detection recently.",
+    "Periodicity Score": (
+        "Peaks when now is close to the moment this band is predicted to go active "
+        "again, from the interval between its past detections. This is what catches "
+        "rotating radars as the beam sweeps back round."
     ),
-    "periodicity bonus": (
-        "Peaks when now is close to the moment this band is predicted to go active again, "
-        "based on the interval between its past detections. This is what catches rotating "
-        "radars as their beam sweeps back round."
-    ),
-    "scan cost": (
-        "A penalty for retuning far across the spectrum, standing in for the time a real "
-        "receiver loses settling on a new frequency."
+    "Scan Cost": (
+        "Penalty for retuning far across the spectrum, standing in for the settling time "
+        "a real receiver loses."
     ),
 }
+
+
+# --- cached loaders -------------------------------------------------------------------
 
 
 @st.cache_resource(show_spinner=False)
@@ -100,18 +101,18 @@ def get_manifest(path: str) -> DatasetManifest:
 
 @st.cache_resource(show_spinner=False)
 def get_predictor(kind: str) -> Any:
-    """Load a predictor (the XGBoost artifact is loaded, never retrained)."""
+    """Load a predictor. The artifact is loaded, never retrained."""
     return load_predictor(get_config(), kind)
 
 
 @st.cache_data(show_spinner=False)
-def get_model_report(path: str) -> dict[str, Any] | None:
-    """Load the saved activity-model test report, if the model has been evaluated."""
+def get_report(path: str) -> dict[str, Any] | None:
+    """Load a saved JSON report if it exists."""
     report_path = Path(path)
     return read_json(report_path) if report_path.exists() else None
 
 
-@st.cache_data(show_spinner="Building environment...")
+@st.cache_data(show_spinner="BUILDING ELECTROMAGNETIC ENVIRONMENT...")
 def build_environment_cached(
     entry_path: str, entry_name: str, scenario: str, horizon: int, max_pulses: int
 ) -> dict[str, Any]:
@@ -121,9 +122,7 @@ def build_environment_cached(
 
     record = load_pulse_train(entry_path).contiguous_window(max_pulses)
     record.source_path = Path(entry_path)
-    built = build_scenario(
-        record, scenario, config.section("environment"), max_timesteps=horizon
-    )
+    built = build_scenario(record, scenario, config.section("environment"), max_timesteps=horizon)
     return {
         "active": built.environment.active,
         "n_pulses": built.environment.n_pulses,
@@ -180,102 +179,163 @@ def run_strategy(environment, strategy_key: str, horizon: int, seed_stream: int)
     return run
 
 
-def spectrum_frame(environment, run: SimulationRun, window: tuple[int, int]) -> pd.DataFrame:
-    """Build a long-form frame of truth and receiver path for the spectrum chart."""
-    start, end = window
-    end = min(end, environment.n_timesteps, run.n_timesteps)
-    rows: list[dict[str, Any]] = []
-    truth = environment.active[start:end]
-    for offset in range(truth.shape[0]):
-        timestep = start + offset
-        for band in np.flatnonzero(truth[offset]):
-            rows.append({"timestep": timestep, "band": int(band), "kind": "emitter active"})
-    for timestep in range(start, end):
-        rows.append(
-            {
-                "timestep": timestep,
-                "band": int(run.selected_band[timestep]),
-                "kind": "receiver hit" if run.hits[timestep] else "receiver miss",
-            }
+# --- charts ---------------------------------------------------------------------------
+
+
+def spectrum_figure(environment, run: SimulationRun, start: int, end: int) -> go.Figure:
+    """Frequency-time console map: ground truth beneath, receiver path over it."""
+    end = int(min(end, environment.n_timesteps, run.n_timesteps))
+    start = int(max(0, start))
+    figure = go.Figure()
+
+    steps, bands = np.nonzero(environment.active[start:end])
+    figure.add_trace(
+        go.Scatter(
+            x=steps + start,
+            y=bands,
+            mode="markers",
+            marker={"size": 7, "symbol": "square", "color": theme.TRUTH, "opacity": 0.8},
+            name="Emitter Active",
+            hovertemplate="T %{x} | Band %{y} | ACTIVE<extra></extra>",
         )
-    return pd.DataFrame(rows)
-
-
-def grade_badge(label: str, grade: str, score: float, caption: str) -> None:
-    """Render a coloured grade badge with its score."""
-    colour = GRADE_COLOURS.get(grade, "#555555")
-    st.markdown(
-        f"""
-        <div style="border:1px solid #d0d7de;border-radius:10px;padding:14px 18px;">
-          <div style="font-size:0.82rem;text-transform:uppercase;letter-spacing:.05em;
-                      opacity:.75;">{label}</div>
-          <div style="display:flex;align-items:baseline;gap:12px;margin-top:4px;">
-            <span style="font-size:2.6rem;font-weight:700;color:{colour};">{grade}</span>
-            <span style="font-size:1.5rem;font-weight:600;">{score:.0f}<span
-                  style="font-size:0.9rem;opacity:.6;">/100</span></span>
-          </div>
-          <div style="font-size:0.85rem;opacity:.8;margin-top:6px;">{caption}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
     )
 
+    window = slice(start, end)
+    timesteps = np.arange(start, end)
+    selected = run.selected_band[window]
+    hits = run.hits[window]
 
-def render_how_to_read() -> None:
-    """Render the top-level explainer."""
-    with st.expander("New here? What this page is showing", expanded=False):
+    figure.add_trace(
+        go.Scatter(
+            x=timesteps,
+            y=selected,
+            mode="lines",
+            line={"color": theme.ACCENT_NEUTRAL, "width": 1},
+            name="Receiver Path",
+            hoverinfo="skip",
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=timesteps[~hits],
+            y=selected[~hits],
+            mode="markers",
+            marker={"size": 7, "symbol": "x", "color": theme.ACCENT_MISS},
+            name="Scan Failed (MISS)",
+            hovertemplate="T %{x} | Band %{y} | MISS<extra></extra>",
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=timesteps[hits],
+            y=selected[hits],
+            mode="markers",
+            marker={
+                "size": 9,
+                "symbol": "circle",
+                "color": theme.ACCENT_HIT,
+                "line": {"width": 1, "color": "#FFFFFF"},
+            },
+            name="Target Intercept (HIT)",
+            hovertemplate="T %{x} | Band %{y} | HIT<extra></extra>",
+        )
+    )
+
+    figure.update_layout(
+        **theme.plotly_layout(
+            height=430,
+            xaxis=theme.axis("TIME (CYCLES)", range=[start - 0.5, end + 0.5]),
+            yaxis=theme.axis("FREQUENCY BAND", range=[-0.5, environment.n_bands - 0.5]),
+        )
+    )
+    return figure
+
+
+def diagnostics_figure(
+    labels: list[str], baseline: list[float], candidate: list[float], ceiling: float
+) -> go.Figure:
+    """Grouped bar chart of the figures of merit, baseline against candidate."""
+    figure = go.Figure()
+    figure.add_trace(
+        go.Bar(
+            x=labels,
+            y=baseline,
+            name="Sequential Sweep",
+            marker_color=theme.ACCENT_NEUTRAL,
+            text=[f"{v:.3g}" for v in baseline],
+            textposition="auto",
+        )
+    )
+    figure.add_trace(
+        go.Bar(
+            x=labels,
+            y=candidate,
+            name="Smart Scan",
+            marker_color=theme.ACCENT_HIT,
+            text=[f"{v:.3g}" for v in candidate],
+            textposition="auto",
+        )
+    )
+    figure.update_layout(
+        **theme.plotly_layout(
+            barmode="group",
+            bargap=0.35,
+            height=400,
+            xaxis=theme.axis(""),
+            yaxis=theme.axis("", range=[0, max(ceiling, 1e-6) * 1.25]),
+            legend={
+                "orientation": "h",
+                "yanchor": "bottom",
+                "y": 1.12,
+                "xanchor": "center",
+                "x": 0.5,
+                "font": {"color": theme.TEXT_BRIGHT},
+            },
+        )
+    )
+    return figure
+
+
+# --- panels ---------------------------------------------------------------------------
+
+
+def render_briefing() -> None:
+    """Render the collapsible orientation panel."""
+    with st.expander("MISSION BRIEFING :: WHAT THIS CONSOLE SHOWS", expanded=False):
         st.markdown(
             """
-**The problem.** A radar-warning receiver has to watch a very wide frequency range, but
-it can only listen to one narrow **band** at a time. So it has to keep re-tuning, and
-every moment it spends on one band is a moment it is deaf to all the others. If it tunes
-to the wrong band at the wrong moment, it misses the transmission entirely.
+**The problem.** A radar-warning receiver must watch a wide frequency range but can only
+listen to **one band at a time**. Every cycle spent on one band is a cycle deaf to the
+other 31. Tune to the wrong band at the wrong moment and the transmission is missed.
 
-**The two strategies being compared.**
+**The two algorithms.**
 
-- **Sequential sweep** (the baseline) marches through the bands in fixed order,
-  `0, 1, 2, ... , 31, 0, ...`, giving every band the same time whether or not anything is
-  there. Simple, predictable, and guaranteed to look at everything eventually. This is
-  what current open-loop systems do.
-- **Smart Scan** decides where to point next, using a machine-learning model that predicts
-  which bands are about to be busy plus what it has learned about each band during the run.
+- **SEQUENTIAL** - the open-loop baseline. Marches through bands in fixed order, giving
+  every band identical time whether or not anything is there. This is what fielded
+  open-loop systems do.
+- **SMART** - decides where to point next from a machine-learning prediction of which
+  bands are about to be busy, plus what it has learned during the run.
 
-**How to read the picture.** In the Spectrum chart, light points are transmissions that
-genuinely happened (ground truth). The receiver's own path is drawn on top: green where it
-was tuned to the right band at the right moment, red where it looked and found nothing.
+**Reading the spectrum map.** Teal squares are transmissions that genuinely happened
+(ground truth, which the receiver never sees). The receiver's own path is drawn over it:
+green where it was tuned to the right band at the right moment, red where it looked and
+found nothing.
 
-**Why the percentages look small.** With one band observable out of 32, a receiver can
-never catch more than a small fraction of everything transmitted. The Scorecard therefore
-shows what fraction of the *achievable* maximum each strategy reached, which is the
-meaningful comparison.
+**Why the percentages look small.** With one band observable out of 32, no receiver can
+catch more than a fraction of everything transmitted. The scorecard therefore reports what
+fraction of the *achievable* maximum each strategy reached.
 
-**Important caveat.** These runs use a synthetic electromagnetic environment, not real
-recorded signals. This is Electronic Support - passive listening and scheduling. Nothing
-here transmits, jams, or touches radio hardware.
+**Scope.** Electronic Support - passive listening and scheduling. Nothing transmits, jams
+or touches radio hardware.
             """
         )
 
 
 def render_scorecard(
-    environment,
-    runs: dict[str, SimulationRun],
-    config: Config,
-    strategy_key: str = CANDIDATE_KEY,
+    environment, runs: dict[str, SimulationRun], config: Config, strategy_key: str
 ) -> None:
-    """Render the headline grades for the selected strategy and the activity model.
-
-    The scheduler grade follows the strategy chosen in the sidebar, so switching to an
-    ablation arm (``smart_ml_only``, ``smart_heuristic``) re-grades that arm rather than
-    silently continuing to show the full system.
-    """
-    st.subheader("Scorecard")
-    st.caption(
-        "Two different things get graded. The **scheduler** is graded against the "
-        "sequential sweep it is meant to beat, because the raw numbers are capped by the "
-        "receiver's hardware and mean little on their own. The **activity model** is the "
-        "machine-learning component inside it, graded on its own terms as a classifier."
-    )
-
+    """Render the graded assessment for the selected strategy and the activity model."""
+    st.markdown("#### MISSION SCORECARD")
     receiver_cfg = config.section("receiver")
     ceiling = oracle_ceiling(
         environment,
@@ -283,11 +343,6 @@ def render_scorecard(
         instantaneous_bandwidth=int(receiver_cfg.get("instantaneous_bandwidth", 1)),
         horizon=runs[strategy_key].n_timesteps,
     )
-    if strategy_key == BASELINE_KEY:
-        st.info(
-            "The sequential sweep **is** the baseline, so grading it against itself is "
-            "parity by definition. Pick another strategy to see a meaningful grade."
-        )
     card = scheduler_scorecard(
         runs[BASELINE_KEY].metrics,
         runs[strategy_key].metrics,
@@ -295,72 +350,57 @@ def render_scorecard(
         candidate_name=strategy_key,
     )
 
-    model_report = get_model_report(
+    model_report = get_report(
         str(config.path_for("paths.results_dir") / "activity_model_test.json")
     )
-    model_card = None
-    if model_report:
-        model_card = activity_model_scorecard(
+    model_card = (
+        activity_model_scorecard(
             {
                 **model_report.get("xgboost", {}),
                 "positive_rate": model_report.get("positive_rate", float("nan")),
                 "n_rows": model_report.get("n_rows", float("nan")),
             }
         )
+        if model_report
+        else None
+    )
 
     left, right = st.columns(2)
     with left:
-        grade_badge(
-            f"{strategy_key} scheduler (this environment)",
+        theme.grade_badge(
+            f"{strategy_key} scheduler :: this environment",
             card.grade,
             card.overall,
             "50 = level with the sequential sweep. 100 = twice as good.",
         )
     with right:
         if model_card:
-            grade_badge(
-                "Activity model (held-out test set)",
+            theme.grade_badge(
+                "activity model :: held-out test set",
                 model_card.grade,
                 model_card.overall,
                 "0 = no better than guessing. 100 = perfect.",
             )
         else:
-            st.info(
-                "No model report yet. Run `python training/evaluate_model.py --config "
-                "config.yaml` to grade the activity model."
+            theme.status_line(
+                "NO MODEL REPORT :: run training/evaluate_model.py", theme.ACCENT_WARN
             )
 
-    st.markdown("**What makes up the scheduler grade**")
-    for component in card.components:
-        columns = st.columns([2, 1, 5])
-        columns[0].markdown(f"**{component.label}**")
-        arrow = "▼ worse" if component.regression else "▲ better"
-        colour = "#d1242f" if component.regression else "#1a7f37"
-        columns[1].markdown(
-            f"<span style='color:{colour};font-weight:600;'>{component.score:.0f}/100 "
-            f"{arrow}</span>",
-            unsafe_allow_html=True,
-        )
-        columns[2].caption(component.detail)
-        st.progress(min(1.0, max(0.0, component.score / 100.0)))
-        with st.expander(f"How {component.label} is calculated", expanded=False):
-            st.markdown(
-                f"- **Formula:** {component.formula}\n"
-                f"- **Sequential sweep:** {component.baseline:.4g}\n"
-                f"- **Smart Scan:** {component.candidate:.4g}\n"
-                f"- Mapped with `50 x (1 + log2(ratio))`, so parity scores 50, twice as "
-                f"good scores 100, half as good scores 0.\n"
-                f"- **Weight in the overall grade:** "
-                f"{card.to_record()['weights'][component.key]:.0%}"
-            )
+    columns = st.columns(3)
+    for column, component in zip(columns, card.components):
+        with column:
+            state = "DEGRADED" if component.regression else "IMPROVED"
+            colour = theme.ACCENT_MISS if component.regression else theme.ACCENT_HIT
+            theme.callout(f"{component.label} :: {state}", f"{component.score:.0f}", colour, 110)
+            st.progress(min(1.0, max(0.0, component.score / 100.0)))
+            st.caption(component.detail)
 
     if card.regressions:
-        st.warning(
-            f"**Where Smart Scan is worse than the plain sweep: "
-            f"{', '.join(card.regressions)}.** This is a real trade, not a rounding error. "
-            "An adaptive scheduler spends more time on bands it expects to be productive, "
-            "so it cannot also guarantee the fixed-period full-spectrum coverage a "
-            "sequential sweep gives for free."
+        theme.status_line(
+            f"ADVISORY :: worse than the plain sweep on {', '.join(card.regressions)}. "
+            "An adaptive scheduler concentrates time on productive bands, so it cannot "
+            "also guarantee the fixed-period coverage a sweep gives for free.",
+            theme.ACCENT_WARN,
         )
 
     fraction = card.context.get("fraction_of_ceiling", float("nan"))
@@ -368,188 +408,158 @@ def render_scorecard(
     if np.isfinite(fraction):
         columns = st.columns(3)
         columns[0].metric(
-            "Best possible intercept rate",
+            "Theoretical Ceiling",
             f"{ceiling['oracle_intercept_rate']:.3f}",
             help=(
-                "The ceiling for any receiver of this bandwidth: it assumes the receiver "
-                "is always already tuned to a transmitting band, with no dwell, retune or "
-                "knowledge limits. No real scheduler can reach it - it exists to make the "
-                "measured numbers interpretable."
+                "Best any receiver of this bandwidth could do: always already tuned to a "
+                "transmitting band, with no dwell, retune or knowledge limits. Unreachable "
+                "by construction - it exists to make the measured numbers interpretable."
             ),
         )
         columns[1].metric(
-            f"{strategy_key} reaches",
+            f"{strategy_key} achieves",
             f"{fraction:.1%}",
             f"{(fraction - baseline_fraction) * 100:+.1f} pts vs sweep",
-            help="Share of that ceiling the Smart Scan strategy actually achieved.",
         )
-        columns[2].metric(
-            "Sequential sweep reaches",
-            f"{baseline_fraction:.1%}",
-            help="Share of the same ceiling the open-loop baseline achieved.",
-        )
+        columns[2].metric("Sequential achieves", f"{baseline_fraction:.1%}")
 
-    experiment = get_model_report(
+    experiment = get_report(
         str(config.path_for("paths.results_dir") / "experiment_results.json")
     )
     overall_card = (experiment or {}).get("scorecards", {}).get("scheduler")
     if overall_card:
-        same = strategy_key == CANDIDATE_KEY
-        st.caption(
-            "The grade above is for the single environment selected in the sidebar. "
-            + (
-                f"Across the whole test split, the last `run_mvp.py` scored `{CANDIDATE_KEY}` "
-                f"**{overall_card['grade']}, {overall_card['overall']:.0f}/100**."
-                if same
-                else f"The whole-test-split figure recorded by `run_mvp.py` covers "
-                f"`{CANDIDATE_KEY}` (**{overall_card['grade']}, "
-                f"{overall_card['overall']:.0f}/100**), not `{strategy_key}`; compare "
-                "ablation arms in `results/experiment_rows.csv`."
+        environments = sum((experiment or {}).get("environments_per_scenario", {}).values())
+        if strategy_key == CANDIDATE_KEY:
+            note = (
+                f"across the whole test split ({environments} environments) the last run "
+                f"scored {CANDIDATE_KEY} {overall_card['grade']} {overall_card['overall']:.0f}/100"
             )
-        )
+        else:
+            note = (
+                f"the recorded split-wide figure covers {CANDIDATE_KEY} "
+                f"({overall_card['grade']} {overall_card['overall']:.0f}/100), not {strategy_key}"
+            )
+        theme.status_line(f"SINGLE ENVIRONMENT READOUT :: {note}.")
 
 
 def render_glossary() -> None:
-    """Render the glossary of terms and metrics."""
-    with st.expander("Glossary: every term on this page", expanded=False):
+    """Render the glossary of terms and the metric reference."""
+    with st.expander("GLOSSARY :: EVERY TERM ON THIS CONSOLE", expanded=False):
         st.markdown(
             """
-**Band** - one slice of the frequency range. The spectrum here is split into 32 bands,
-and the receiver can listen to one at a time.
+**BAND** - one slice of the frequency range. The spectrum is split into 32; the receiver
+hears one at a time.
 
-**Timestep** - one tick of the simulation clock (2 ms here). The receiver makes one
-observation per timestep.
+**CYCLE / TIMESTEP** - one tick of the simulation clock (2 ms). One observation per cycle.
 
-**Dwell** - how many consecutive timesteps the receiver stays on a band before deciding
-where to go next.
+**DWELL** - consecutive cycles spent on a band before re-deciding.
 
-**PDW (Pulse Descriptor Word)** - the record of one detected radar pulse: when it arrived,
-its frequency, how long it lasted, what direction it came from, and how strong it was.
+**PDW (Pulse Descriptor Word)** - the record of one detected pulse: arrival time,
+frequency, width, bearing, amplitude.
 
-**PRI (Pulse Repetition Interval)** - the gap between a radar's pulses. Here it is
-estimated from the gaps between *detections of a band*, which is what tells the scheduler
-when that band is likely to be active again.
+**PRI (Pulse Repetition Interval)** - the gap between a radar's pulses. Estimated here
+from the gaps between *detections of a band*, which is what tells the scheduler when that
+band is likely to be active again.
 
-**Hit / intercept** - the receiver was tuned to a band that was genuinely transmitting,
-and detected it.
+**HIT / INTERCEPT** - the receiver was tuned to a genuinely transmitting band and detected
+it.
 
-**Miss** - the receiver listened and found nothing there.
+**OCCUPANCY** - fraction of all band-cycles carrying a transmission. Higher means a busier,
+more crowded spectrum.
 
-**Occupancy** - the fraction of all band-timesteps in which some emitter was transmitting.
-Higher means a busier, more crowded spectrum.
+**GROUND TRUTH** - what genuinely happened. The receiver never sees it; it is used only to
+score performance after the fact.
 
-**Ground truth** - what genuinely happened in the environment. The receiver never sees
-this; it is used only to score performance after the fact.
+**SPATIALLY SCANNING EMITTER** - a rotating antenna. A fixed receiver hears it only while
+the beam sweeps past, so it appears in short, regular bursts.
 
-**Spatially scanning emitter** - a radar with a rotating antenna. A fixed receiver only
-hears it while its beam sweeps past, so it appears in short, regular bursts.
-
-**Frequency-agile emitter** - a radar that hops between frequencies, so its activity moves
-between bands and its past behaviour is a weaker guide to its future.
+**FREQUENCY-AGILE EMITTER** - hops between frequencies, so activity migrates across bands
+and past behaviour is a weaker guide to the future.
             """
         )
-        st.markdown("**The performance metrics**")
         st.dataframe(
             pd.DataFrame(
                 [
                     {
-                        "metric": metric,
-                        "direction": "lower is better"
+                        "METRIC": metric,
+                        "DIRECTION": "lower is better"
                         if metric in LOWER_IS_BETTER
                         else "higher is better",
-                        "what it means": describe_metric(metric),
+                        "MEANING": describe_metric(metric),
                     }
                     for metric in HEADLINE_METRICS
                 ]
             ),
-            width="stretch",
+            use_container_width=True,
             hide_index=True,
         )
 
 
+# --- main -----------------------------------------------------------------------------
+
+
 def main() -> None:
-    """Render the dashboard."""
-    st.set_page_config(page_title="Smart Scan EW Scheduler", layout="wide")
+    """Render the console."""
+    st.set_page_config(layout="wide", page_title="Smart Scan EW Dashboard")
+    theme.inject_css()
     config = get_config()
 
-    st.title("Smart Scan Strategy for Electronic Warfare")
-    st.caption(
-        "Electronic Support (passive detection and scheduling) research simulation. "
-        "No RF transmission, jamming or hardware control."
+    theme.header(
+        "EW RECEIVER SCHEDULER :: SMART SCAN",
+        "Tactical Interception &amp; Spectrum Management Console",
     )
-    render_how_to_read()
 
     try:
         manifest = get_manifest(str(config.path_for("paths.manifest")))
     except FileNotFoundError as exc:
-        st.error(str(exc))
+        theme.status_line(f"SYSTEM ALERT :: {exc}", theme.ACCENT_MISS)
         st.stop()
 
     with st.sidebar:
-        st.header("Simulation controls")
-        st.caption("Change anything here and the simulation re-runs from scratch.")
-        split = st.selectbox(
-            "Split",
-            ["test", "validation", "train"],
-            index=0,
-            help=(
-                "Which group of pulse trains to use. **test** is the held-out set the "
-                "model never saw during training, so it gives the honest numbers."
-            ),
-        )
+        st.markdown("#### MISSION CONFIGURATION")
+        split = st.selectbox("DATA SPLIT", ["test", "validation", "train"], index=0)
         entries = manifest.for_split(split)
         if not entries:
-            st.error(f"No pulse trains in split {split}")
+            theme.status_line(f"NO PULSE TRAINS IN SPLIT {split.upper()}", theme.ACCENT_MISS)
             st.stop()
-        entry_names = [f"{entry.name}  ({entry.stratum})" for entry in entries]
+
+        emitter_counts = [int(e.characterisation.get("n_emitters") or 0) for e in entries]
+        default_index = (
+            min(range(len(entries)), key=lambda i: abs(emitter_counts[i] - 15))
+            if any(emitter_counts)
+            else 0
+        )
         entry_index = st.selectbox(
-            "Pulse train",
+            "PULSE TRAIN",
             range(len(entries)),
-            format_func=lambda i: entry_names[i],
+            index=default_index,
+            format_func=lambda i: f"{entries[i].name}  [{entries[i].stratum}]",
             help=(
-                "One recorded electromagnetic environment: a stream of radar pulses from "
-                "a set of emitters. The label in brackets is the emitter behaviour this "
-                "train was chosen to represent."
+                "One recorded electromagnetic environment. The default is a train busy "
+                "enough to make the spectrum map readable, not the first in the list."
             ),
         )
         entry = entries[entry_index]
         scenario = st.selectbox(
-            "Scenario",
+            "SCENARIO PROFILE",
             ["spatial_scan", "frequency_agile", "mixed"],
-            format_func=lambda key: SCENARIO_LABELS.get(key, key),
-            help=(
-                "Which emitters to keep. The two named scenarios are the ones the problem "
-                "statement calls for; **mixed** keeps every emitter in the train."
-            ),
+            format_func=lambda key: SCENARIO_LABELS.get(key, key).upper(),
         )
         horizon = st.slider(
-            "Timesteps",
+            "DURATION (CYCLES)",
             200,
             int(config.get("environment.max_timesteps", 5000)),
             int(config.get("simulation.n_timesteps", 4000)),
             step=100,
-            help="How long to run the simulation. Each timestep is one receiver observation.",
-        )
-        strategy_key = st.selectbox(
-            "Strategy on display",
-            [spec.key for spec in DEFAULT_STRATEGIES],
-            index=[spec.key for spec in DEFAULT_STRATEGIES].index(CANDIDATE_KEY),
-            help=(
-                "**sequential** is the open-loop baseline sweep. **smart** is the full "
-                "strategy. The `smart_heuristic` and `smart_ml_only` variants switch off "
-                "the learned model and the online adaptation respectively, which is how "
-                "their contribution is measured."
-            ),
         )
         st.divider()
-        st.caption(f"Data source: **{manifest.source}**")
+        st.caption(f"SOURCE :: {manifest.source.upper()}")
         if manifest.source == "mock":
-            st.caption(
-                ":orange[Synthetic generator - the real Turing dataset is gated and needs "
-                "an access token.]"
-            )
-        st.caption(f"Seed: **{config.seed}** (every run reproduces exactly from it)")
-        st.caption(f"Model artifact: `{config.path_for('paths.model_artifact').name}`")
+            st.caption(":orange[SYNTHETIC GENERATOR - REAL DATASET GATED]")
+        st.caption(f"SEED :: {config.seed}")
+        st.caption(f"ARTIFACT :: {config.path_for('paths.model_artifact').name}")
+
+    render_briefing()
 
     payload = build_environment_cached(
         entry.path,
@@ -560,288 +570,249 @@ def main() -> None:
     )
     environment = rehydrate(payload)
     if environment.n_timesteps == 0:
-        st.error("This pulse train produced an empty environment.")
+        theme.status_line(
+            "SYSTEM ALERT :: environment empty after scenario filtering", theme.ACCENT_MISS
+        )
         st.stop()
 
-    with st.spinner("Running schedulers..."):
-        runs = {
-            key: run_strategy(environment, key, horizon, seed_stream=entry_index)
-            for key in {BASELINE_KEY, CANDIDATE_KEY, strategy_key}
-        }
-    run = runs[strategy_key]
+    vis_left, vis_right = st.columns([3.5, 1])
+    with vis_left:
+        heatmap_container = st.container()
+        controls_container = st.container()
+    with vis_right:
+        telemetry_container = st.container()
 
-    render_scorecard(environment, runs, config, strategy_key=strategy_key)
+    # Controls execute first so the scrubber value is available to the map rendered above.
+    with controls_container:
+        st.markdown("#### TACTICAL DISPLAY CONTROLS")
+        control_a, control_b, control_c = st.columns([1.4, 2.4, 1.2])
+        with control_a:
+            strategy_key = st.radio(
+                "ACTIVE ALGORITHM",
+                [spec.key for spec in DEFAULT_STRATEGIES],
+                index=[spec.key for spec in DEFAULT_STRATEGIES].index(CANDIDATE_KEY),
+                format_func=lambda x: f"[{x.upper()}]",
+            )
+
+        with st.spinner("EXECUTING SCHEDULERS..."):
+            runs = {
+                key: run_strategy(environment, key, horizon, seed_stream=entry_index)
+                for key in {BASELINE_KEY, CANDIDATE_KEY, strategy_key}
+            }
+        run = runs[strategy_key]
+
+        with control_b:
+            cursor = st.slider(
+                "TIMELINE SCRUBBER (CYCLE)", 0, run.n_timesteps - 1, min(400, run.n_timesteps - 1)
+            )
+        with control_c:
+            span = st.slider(
+                "WINDOW (CYCLES)", 100, min(1200, run.n_timesteps), min(400, run.n_timesteps), step=50
+            )
+
+    window_start = max(0, min(cursor - span + 1, run.n_timesteps - span))
+
+    with heatmap_container:
+        st.markdown("#### FREQUENCY-TIME SPECTRUM HEATMAP")
+        st.plotly_chart(
+            spectrum_figure(environment, run, window_start, cursor + 1), use_container_width=True
+        )
+
+    with telemetry_container:
+        st.markdown("#### RECEIVER TELEMETRY")
+        band = int(run.selected_band[cursor])
+        st.metric("Current Target Band", f"BAND {band}")
+        st.metric("Centre Frequency", f"{environment.band_centres_mhz[band]:,.0f} MHz")
+        probability = run.predicted_probability[cursor]
+        st.metric(
+            "Predicted Activity", "N/A" if not np.isfinite(probability) else f"{probability:.3f}"
+        )
+        st.metric("Intercept Status", "HIT" if run.hits[cursor] else "MISS")
+        st.metric("Pulses Reported", int(run.signal_count[cursor]))
+        st.divider()
+        error_change = relative_improvement(
+            runs[BASELINE_KEY].metrics["average_intercept_time_error"],
+            run.metrics["average_intercept_time_error"],
+            "average_intercept_time_error",
+        )
+        st.metric(
+            "Avg Time Error",
+            f"{run.metrics['average_intercept_time_error']:.1f} cyc",
+            "n/a" if not np.isfinite(error_change) else f"{error_change * 100:+.1f}% vs Seq",
+        )
+        correct = run.metrics.get("percentage_of_correct_predictions", float("nan"))
+        st.metric(
+            "Correct Predictions",
+            "N/A" if not np.isfinite(correct) else f"{correct:.1f}%",
+            "open loop makes none" if not np.isfinite(correct) else "AI model",
+        )
+
     st.divider()
 
-    # --- Environment -------------------------------------------------------------
-    st.subheader("Environment")
-    st.caption(
-        "The electromagnetic environment the receiver is searching. This is the ground "
-        "truth - what the emitters genuinely did. The receiver never gets to see it."
-    )
     summary = payload["summary"]
-    columns = st.columns(5)
-    columns[0].metric(
-        "Bands", environment.n_bands, help="Frequency slices. The receiver hears one at a time."
-    )
-    columns[1].metric(
-        "Timesteps", environment.n_timesteps, help="Length of the run in receiver observations."
-    )
-    columns[2].metric(
-        "Occupancy",
-        f"{environment.occupancy:.3f}",
-        help=(
-            "Fraction of all band-timesteps carrying a transmission. 0.28 means roughly "
-            "28% of the spectrum-time is busy - a crowded environment."
-        ),
-    )
-    columns[3].metric(
-        "Emitters kept",
-        f"{summary['emitters_kept']}/{summary['emitters_total']}",
-        help=(
-            "How many of the train's emitters this scenario keeps. Scenarios filter to one "
-            "behaviour class plus static background clutter."
-        ),
-    )
-    columns[4].metric(
-        "Timestep",
-        f"{environment.timestep_us / 1000:.1f} ms",
-        help="Real time represented by one simulation timestep.",
-    )
-    if summary.get("fallback"):
-        st.info(f"Scenario note: {summary['fallback']}")
+    columns = st.columns([1, 1, 1.8, 1, 1])
+    columns[0].metric("Spectrum Bands", environment.n_bands)
+    columns[1].metric("Active Emitters", f"{summary['emitters_kept']}")
+    columns[2].metric("Scenario Profile", scenario.replace("_", " ").upper())
+    columns[3].metric("Duration (Cycles)", environment.n_timesteps)
+    columns[4].metric("Occupancy", f"{environment.occupancy:.3f}")
 
-    # --- Current receiver --------------------------------------------------------
-    st.subheader("Current receiver")
-    st.caption(
-        "Drag the cursor to step through the run and watch what the receiver did at that "
-        "moment."
-    )
-    timestep = st.slider(
-        "Timestep cursor",
-        0,
-        run.n_timesteps - 1,
-        min(200, run.n_timesteps - 1),
-        help="Which moment of the run to inspect. The panels below follow this cursor.",
-    )
-    band = int(run.selected_band[timestep])
-    columns = st.columns(5)
-    columns[0].metric("Tuned band", band, help="The band the receiver was listening to.")
-    columns[1].metric(
-        "Centre frequency",
-        f"{environment.band_centres_mhz[band]:,.0f} MHz",
-        help="The middle of that band in real frequency units.",
-    )
-    columns[2].metric(
-        "Predicted probability",
-        "n/a"
-        if not np.isfinite(run.predicted_probability[timestep])
-        else f"{run.predicted_probability[timestep]:.3f}",
-        help=(
-            "How likely the scheduler thought this band was to be transmitting, before it "
-            "listened. The open-loop sweep makes no prediction, so it shows n/a."
-        ),
-    )
-    columns[3].metric(
-        "Result",
-        "HIT" if run.hits[timestep] else "miss",
-        help="HIT means it was tuned to a genuinely transmitting band and detected it.",
-    )
-    columns[4].metric(
-        "Pulses reported",
-        int(run.signal_count[timestep]),
-        help="How many radar pulses the receiver reported in that observation.",
-    )
+    st.divider()
+    render_scorecard(environment, runs, config, strategy_key)
+    st.divider()
 
-    # --- Spectrum ----------------------------------------------------------------
-    st.subheader("Spectrum")
-    st.caption(
-        "Time runs left to right, frequency band bottom to top. **emitter active** points "
-        "are transmissions that genuinely happened; **receiver hit** and **receiver miss** "
-        "trace where the receiver actually pointed. A good strategy puts its path on top "
-        "of the activity."
-    )
-    span = st.slider(
-        "Window shown",
-        100,
-        min(1500, run.n_timesteps),
-        min(400, run.n_timesteps),
-        help="How many timesteps of the run to display around the cursor.",
-    )
-    start = max(0, min(timestep - span // 2, run.n_timesteps - span))
-    frame = spectrum_frame(environment, run, (start, start + span))
-    st.scatter_chart(frame, x="timestep", y="band", color="kind", height=430, size=18)
-    st.caption(
-        "Static, higher-resolution versions of this chart are written to `figures/` by "
-        "`scripts/run_mvp.py`."
-    )
+    title_col, button_col = st.columns([4, 1])
+    with title_col:
+        st.markdown("#### ALGORITHM PERFORMANCE DIAGNOSTICS")
+    with button_col:
+        animate = st.button("COMPUTE DIAGNOSTICS", use_container_width=True)
 
-    # --- Performance -------------------------------------------------------------
-    st.subheader("Performance")
-    st.caption(
-        "The figures of merit the problem statement asks for, measured on this run. The "
-        "third column explains what each one is actually telling you."
-    )
+    labels = [
+        "Detection (Pd)",
+        "False Alarm (Pfa)",
+        "Sensitivity",
+        "Intercept Rate",
+        "Avg Reward",
+    ]
+    keys = [
+        "probability_of_detection",
+        "probability_of_false_alarm",
+        "sensitivity",
+        "average_intercept_rate",
+        "average_reward",
+    ]
+    baseline_values = [float(runs[BASELINE_KEY].metrics.get(k, 0.0)) for k in keys]
+    candidate_values = [float(run.metrics.get(k, 0.0)) for k in keys]
+    ceiling_value = max(max(baseline_values), max(candidate_values))
+
+    placeholder = st.empty()
+    if animate:
+        for step in range(1, 16):
+            factor = step / 15
+            placeholder.plotly_chart(
+                diagnostics_figure(
+                    labels,
+                    [v * factor for v in baseline_values],
+                    [v * factor for v in candidate_values],
+                    ceiling_value,
+                ),
+                use_container_width=True,
+            )
+            time.sleep(0.03)
+    else:
+        placeholder.plotly_chart(
+            diagnostics_figure(labels, baseline_values, candidate_values, ceiling_value),
+            use_container_width=True,
+        )
+
+    st.divider()
+
+    left, right = st.columns(2)
+    with left:
+        st.markdown("#### AI DECISION EXPLAINABILITY")
+        decisions = [d for d in run.decisions if d["timestep"] <= cursor]
+        if not decisions:
+            theme.status_line(
+                "EXPLAINABILITY UNAVAILABLE :: the open-loop sweep does not choose, it "
+                "advances in fixed order - the behaviour the problem statement criticises.",
+                theme.ACCENT_WARN,
+            )
+        else:
+            decision = decisions[-1]
+            weights = config.get("scheduler.weights", {})
+            rows = [
+                (
+                    "Predicted Activity",
+                    decision["combined_probability"],
+                    weights.get("w1_predicted_probability"),
+                ),
+                ("Exploration Bonus", decision["exploration_bonus"], weights.get("w2_exploration_bonus")),
+                ("Recency Bonus", decision["recency_bonus"], weights.get("w3_recency_bonus")),
+                ("Periodicity Score", decision["periodicity_bonus"], weights.get("w4_periodicity_bonus")),
+                ("Scan Cost", -decision["scan_cost"], weights.get("w5_scan_cost")),
+            ]
+            theme.status_line(
+                f"CYCLE {decision['timestep']} ACTION :: scanner directed to BAND {decision['band']}"
+            )
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "VECTOR": name,
+                            "VALUE": f"{value:.3f}",
+                            "WEIGHT": f"{float(weight):.2f}",
+                            "CONTRIBUTION": f"{value * float(weight):.3f}",
+                        }
+                        for name, value, weight in rows
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+                height=215,
+            )
+            winner = max(((n, v * float(w)) for n, v, w in rows), key=lambda item: item[1])
+            theme.callout("Final Calculated Score", f"{decision['score']:.2f}")
+            st.caption(f"**{winner[0]}** dominated this decision. {SCORE_TERM_HELP[winner[0]]}")
+            metric_columns = st.columns(2)
+            metric_columns[0].metric("PRI Estimate", f"{decision['pri_estimate_us'] / 1000:.1f} ms")
+            metric_columns[1].metric("Periodicity Score", f"{decision['periodicity_score']:.3f}")
+
+    with right:
+        st.markdown("#### SCHEDULER DECISION LOG")
+        end = min(cursor + 1, run.n_timesteps)
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "CYCLE": np.arange(window_start, end),
+                    "BAND": run.selected_band[window_start:end],
+                    "PROBABILITY": np.round(run.predicted_probability[window_start:end], 3),
+                    "PULSES": run.signal_count[window_start:end],
+                    "OUTCOME": np.where(run.hits[window_start:end], "HIT", "MISS"),
+                }
+            ).sort_values("CYCLE", ascending=False),
+            use_container_width=True,
+            hide_index=True,
+            height=425,
+        )
+
+    st.divider()
+
+    st.markdown("#### FIGURES OF MERIT :: SEQUENTIAL VS SMART")
     st.dataframe(
         pd.DataFrame(
             [
                 {
-                    "metric": metric,
-                    "value": run.metrics.get(metric, float("nan")),
-                    "direction": "lower is better"
-                    if metric in LOWER_IS_BETTER
-                    else "higher is better",
-                    "what it means": describe_metric(metric),
+                    "METRIC": metric,
+                    "SEQUENTIAL": runs[BASELINE_KEY].metrics.get(metric, float("nan")),
+                    "SMART": runs[CANDIDATE_KEY].metrics.get(metric, float("nan")),
+                    "IMPROVEMENT": relative_improvement(
+                        runs[BASELINE_KEY].metrics.get(metric, float("nan")),
+                        runs[CANDIDATE_KEY].metrics.get(metric, float("nan")),
+                        metric,
+                    ),
+                    "MEANING": describe_metric(metric),
                 }
                 for metric in HEADLINE_METRICS
             ]
         ),
-        width="stretch",
-        hide_index=True,
-    )
-
-    # --- Comparison --------------------------------------------------------------
-    st.subheader("Comparison - Sequential sweep vs Smart Scan")
-    st.caption(
-        "Both strategies ran on this identical environment with identical receiver seeds, "
-        "so the only thing that differs is where each chose to point. A positive "
-        "improvement always means Smart Scan is better, whichever direction the raw metric "
-        "runs in."
-    )
-    baseline_metrics = runs[BASELINE_KEY].metrics
-    candidate_metrics = runs[CANDIDATE_KEY].metrics
-    comparison = pd.DataFrame(
-        [
-            {
-                "metric": metric,
-                "sequential sweep": baseline_metrics.get(metric, float("nan")),
-                "smart scan": candidate_metrics.get(metric, float("nan")),
-                "improvement": relative_improvement(
-                    baseline_metrics.get(metric, float("nan")),
-                    candidate_metrics.get(metric, float("nan")),
-                    metric,
-                ),
-                "verdict": "",
-            }
-            for metric in HEADLINE_METRICS
-        ]
-    )
-    comparison["verdict"] = [
-        "-"
-        if not np.isfinite(value)
-        else ("better" if value > 0.005 else ("worse" if value < -0.005 else "level"))
-        for value in comparison["improvement"]
-    ]
-    st.dataframe(
-        comparison,
-        width="stretch",
+        use_container_width=True,
         hide_index=True,
         column_config={
-            "improvement": st.column_config.NumberColumn("improvement", format="%.1f%%")
+            "IMPROVEMENT": st.column_config.NumberColumn("IMPROVEMENT", format="%.1f%%")
         },
     )
-
-    # --- Explainability ----------------------------------------------------------
-    st.subheader("Explainability - why did it choose that band?")
     st.caption(
-        "The scheduler scores every band, then tunes to the highest. Each term below is a "
-        "weighted piece of that score; the weights come from `config.yaml`."
+        "Both strategies ran on this identical environment with identical receiver seeds, "
+        "so the only difference is where each chose to point. A positive improvement always "
+        "means Smart Scan is better, whichever direction the raw metric runs in."
     )
-    decisions = [d for d in run.decisions if d["timestep"] <= timestep]
-    if not decisions:
-        st.info(
-            "This strategy records no score breakdown. The sequential sweep does not "
-            "choose - it simply advances to the next band in fixed order, which is exactly "
-            "the open-loop behaviour the problem statement criticises."
-        )
-    else:
-        decision = decisions[-1]
-        weights = config.get("scheduler.weights", {})
-        breakdown = pd.DataFrame(
-            [
-                {
-                    "component": "predicted probability",
-                    "value": decision["combined_probability"],
-                    "weight": weights.get("w1_predicted_probability"),
-                },
-                {
-                    "component": "exploration bonus",
-                    "value": decision["exploration_bonus"],
-                    "weight": weights.get("w2_exploration_bonus"),
-                },
-                {
-                    "component": "recency bonus",
-                    "value": decision["recency_bonus"],
-                    "weight": weights.get("w3_recency_bonus"),
-                },
-                {
-                    "component": "periodicity bonus",
-                    "value": decision["periodicity_bonus"],
-                    "weight": weights.get("w4_periodicity_bonus"),
-                },
-                {
-                    "component": "scan cost",
-                    "value": -decision["scan_cost"],
-                    "weight": weights.get("w5_scan_cost"),
-                },
-            ]
-        )
-        breakdown["contribution"] = breakdown["value"] * breakdown["weight"].astype(float)
-        breakdown["what it means"] = [
-            SCORE_TERM_HELP[name] for name in breakdown["component"]
-        ]
 
-        left, right = st.columns([3, 1])
-        left.dataframe(breakdown, width="stretch", hide_index=True)
-        right.metric("Chosen band", int(decision["band"]))
-        right.metric(
-            "Total score",
-            f"{decision['score']:.3f}",
-            help="Sum of the weighted contributions. The highest-scoring band wins.",
-        )
-        right.metric(
-            "PRI estimate",
-            f"{decision['pri_estimate_us'] / 1000:.1f} ms",
-            help=(
-                "How often this band has been found active, measured from the gaps between "
-                "past detections. 0 means not enough detections yet to estimate."
-            ),
-        )
-        right.metric(
-            "Periodicity score",
-            f"{decision['periodicity_score']:.3f}",
-            help=(
-                "How regular those gaps are, from 0 (irregular or unknown) to 1 (clockwork). "
-                "A rotating radar scores high; a frequency-hopping emitter scores low."
-            ),
-        )
-
-        biggest = breakdown.loc[breakdown["contribution"].idxmax()]
-        st.info(
-            f"**In plain terms:** band {int(decision['band'])} won mainly on "
-            f"**{biggest['component']}** ({biggest['contribution']:.3f} of the "
-            f"{decision['score']:.3f} total). {SCORE_TERM_HELP[biggest['component']]}"
-        )
-
-        st.markdown("**Decision timeline** - the first 25 choices of this run")
-        st.dataframe(
-            pd.DataFrame(decision_timeline_table(run, n_rows=25)),
-            width="stretch",
-            hide_index=True,
-        )
-
-    st.divider()
     render_glossary()
-    source_note = (
-        "the **real Turing Synthetic Radar Dataset**"
-        if manifest.source == "huggingface"
-        else "a **synthetic generator** (the real dataset was not reachable)"
-    )
-    st.caption(
-        "Scheduler weights are experimental parameters. The pre-registered selection rule "
-        "in `scripts/tune_weights.py` selected no configuration on the validation split, "
-        "so the shipped weights were chosen post hoc under a weaker no-regression "
-        f"criterion — see the README. Data source: {source_note}."
+    theme.footer(
+        [
+            "Smart Scan Strategy for Electronic Warfare :: Electronic Support (passive) research simulation",
+            "No RF transmission, jamming or hardware control :: &copy; 2026",
+        ]
     )
 
 

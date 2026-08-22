@@ -170,6 +170,64 @@ def build_strategy_scheduler(
     return build_scheduler(spec.kind, n_bands=n_bands, rng=rng, predictor=predictor, scheduler_cfg=cfg)
 
 
+
+def _run_one_environment(
+    scenario_name: str,
+    env_index: int,
+    environment: Any,
+    strategies: Sequence[StrategySpec],
+    predictors: dict[str, Any],
+    scheduler_cfg: dict[str, Any],
+    receiver_cfg: dict[str, Any],
+    features_cfg: dict[str, Any],
+    reward_model: RewardModel,
+    seed: int,
+    horizon: int,
+    prediction_window: int,
+    record_decisions: bool,
+) -> tuple[list[dict[str, Any]], dict[str, SimulationRun]]:
+    """Run every strategy against one environment.
+
+    This is the unit of parallelism. Every seed is derived from ``env_index``, so the
+    result is identical whether environments run concurrently or one after another.
+    """
+    rows: list[dict[str, Any]] = []
+    kept: dict[str, SimulationRun] = {}
+    for spec in strategies:
+        scheduler = build_strategy_scheduler(
+            spec,
+            n_bands=environment.n_bands,
+            rng=make_rng(seed, stream=5000 + env_index),
+            scheduler_cfg=scheduler_cfg,
+            predictor=predictors.get(spec.predictor),
+        )
+        run = run_simulation(
+            environment=environment,
+            scheduler=scheduler,
+            receiver_cfg=receiver_cfg,
+            features_cfg=features_cfg,
+            reward_model=reward_model,
+            rng=make_rng(seed, stream=9000 + env_index),
+            n_timesteps=horizon,
+            prediction_window=prediction_window,
+            record_decisions=record_decisions,
+        )
+        run.strategy = spec.key
+        rows.append(
+            {
+                "scenario": scenario_name,
+                "environment": environment.name,
+                "environment_index": env_index,
+                "strategy": spec.key,
+                "description": spec.description,
+                **run.metrics,
+            }
+        )
+        if record_decisions:
+            kept[f"{scenario_name}:{spec.key}"] = run
+    return rows, kept
+
+
 def run_strategy_matrix(
     config: Config,
     scenarios_by_name: dict[str, list[Scenario]],
@@ -177,6 +235,7 @@ def run_strategy_matrix(
     strategies: Sequence[StrategySpec] = DEFAULT_STRATEGIES,
     n_timesteps: int | None = None,
     keep_runs_for: Iterable[str] | None = None,
+    n_jobs: int | None = None,
 ) -> ExperimentResult:
     """Run every strategy on every scenario environment with matched seeds.
 
@@ -185,8 +244,13 @@ def run_strategy_matrix(
         scenarios_by_name: ``{scenario name: [Scenario, ...]}``.
         strategies: strategies to compare.
         n_timesteps: run length; defaults to ``simulation.n_timesteps``.
-        keep_runs_for: scenario names whose runs should be retained for plotting
-            (the first environment of each is kept).
+        keep_runs_for: which environment's runs to retain per scenario, for plotting.
+            Pass a mapping ``{scenario: env_index}`` to keep a chosen one, or an iterable
+            of scenario names to keep their first environment. Plotting the *first*
+            environment is a poor default -- with 60 test trains it is often a near-empty
+            one, which makes a frequency-time map that shows nothing.
+        n_jobs: worker processes to spread environments over; defaults to
+            ``simulation.n_jobs``. Results are identical at any value.
 
     Returns:
         The assembled :class:`ExperimentResult`.
@@ -197,7 +261,11 @@ def run_strategy_matrix(
     reward_model = RewardModel.from_config(config.section("reward"))
     prediction_window = int(config.get("activity_model.prediction_window", 5))
     horizon = int(n_timesteps or config.get("simulation.n_timesteps", 2000))
-    keep = set(keep_runs_for or scenarios_by_name)
+    # Normalise to {scenario: env_index}; a bare iterable means "first environment".
+    if isinstance(keep_runs_for, dict):
+        keep: dict[str, int] = {str(k): int(v) for k, v in keep_runs_for.items()}
+    else:
+        keep = {str(name): 0 for name in (keep_runs_for or scenarios_by_name)}
 
     predictors = {
         kind: load_predictor(config, kind)
@@ -206,6 +274,10 @@ def run_strategy_matrix(
     }
 
     result = ExperimentResult()
+
+    # Environments are independent and seeded from their own index, so they can run
+    # concurrently without changing a single number. Only the wall clock differs.
+    tasks: list[tuple[str, int, Any, bool]] = []
     for scenario_name, scenario_list in scenarios_by_name.items():
         for env_index, scenario in enumerate(scenario_list):
             environment = scenario.environment
@@ -213,40 +285,43 @@ def run_strategy_matrix(
                 LOGGER.warning("Skipping empty environment %s", environment.name)
                 continue
             result.scenario_summaries.append(scenario.summary())
+            tasks.append(
+                (
+                    scenario_name,
+                    env_index,
+                    environment,
+                    keep.get(scenario_name, -1) == env_index,
+                )
+            )
 
-            for spec in strategies:
-                scheduler = build_strategy_scheduler(
-                    spec,
-                    n_bands=environment.n_bands,
-                    rng=make_rng(config.seed, stream=5000 + env_index),
-                    scheduler_cfg=scheduler_cfg,
-                    predictor=predictors.get(spec.predictor),
-                )
-                # Identical receiver seed for every strategy on this environment.
-                run = run_simulation(
-                    environment=environment,
-                    scheduler=scheduler,
-                    receiver_cfg=receiver_cfg,
-                    features_cfg=features_cfg,
-                    reward_model=reward_model,
-                    rng=make_rng(config.seed, stream=9000 + env_index),
-                    n_timesteps=horizon,
-                    prediction_window=prediction_window,
-                    record_decisions=(env_index == 0 and scenario_name in keep),
-                )
-                run.strategy = spec.key
-                result.rows.append(
-                    {
-                        "scenario": scenario_name,
-                        "environment": environment.name,
-                        "environment_index": env_index,
-                        "strategy": spec.key,
-                        "description": spec.description,
-                        **run.metrics,
-                    }
-                )
-                if env_index == 0 and scenario_name in keep:
-                    result.runs[f"{scenario_name}:{spec.key}"] = run
+    workers = int(n_jobs if n_jobs is not None else config.get("simulation.n_jobs", 1) or 1)
+    LOGGER.info("Running %d environments x %d strategies on %d worker(s)",
+                len(tasks), len(strategies), workers)
+
+    if workers == 1:
+        outputs = [
+            _run_one_environment(
+                scenario_name, env_index, environment, strategies, predictors,
+                scheduler_cfg, receiver_cfg, features_cfg, reward_model, config.seed,
+                horizon, prediction_window, record_decisions,
+            )
+            for scenario_name, env_index, environment, record_decisions in tasks
+        ]
+    else:
+        from joblib import Parallel, delayed
+
+        outputs = Parallel(n_jobs=workers, backend="loky", verbose=0)(
+            delayed(_run_one_environment)(
+                scenario_name, env_index, environment, strategies, predictors,
+                scheduler_cfg, receiver_cfg, features_cfg, reward_model, config.seed,
+                horizon, prediction_window, record_decisions,
+            )
+            for scenario_name, env_index, environment, record_decisions in tasks
+        )
+
+    for rows, kept in outputs:
+        result.rows.extend(rows)
+        result.runs.update(kept)
 
     result.aggregated = _aggregate(result.rows, group_key="scenario")
     result.overall = _aggregate_overall(result.rows)

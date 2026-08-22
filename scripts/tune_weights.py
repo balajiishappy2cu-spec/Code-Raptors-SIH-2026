@@ -55,34 +55,36 @@ LOGGER = get_logger("scripts.tune_weights")
 #: split. A configuration that only just meets the constraint here does not transfer.
 DISCOVERY_MARGIN = 0.90
 
-#: The grid searched. Kept small on purpose: this is a 24-hour MVP, not a HPO study, and
-#: at 40 validation environments each configuration costs real wall-clock time.
+#: The grid searched. Kept small on purpose: this is an MVP, not an HPO study, and at 80
+#: validation environments each configuration costs real wall-clock time.
 #:
-#: The axes are not equally important, and this grid is trimmed on measured sensitivity
-#: rather than taste. From the previous 48-configuration sweep on real data (mean average
-#: reward over feasible configurations at each level):
+#: The axes are trimmed on measured sensitivity, not taste. A previous 48-configuration
+#: sweep on real data gave, as mean average reward over feasible configurations:
 #:
-#: * ``staleness_saturation`` dominates -- 0.073 at 32, -0.015 at 64, -0.009 at 100.
-#:   Every top-five configuration used 32, which was the grid's lower edge, so 24 is added
-#:   to bracket it from below and 64/100 are dropped as clearly worse.
-#: * ``w2_exploration_bonus`` is second and monotone decreasing above 2.5 -- 0.046 at 2.5,
-#:   0.020 at 3.5, 0.007 at 5.0, -0.015 at 7.0. So 5.0 and 7.0 are dropped and 1.75 is
-#:   added to bracket the new edge.
-#: * ``w5_scan_cost`` shifts reward by only ~0.006, but the two levels trade differently
-#:   against the discovery constraint (0.1 earned more reward, 0.6 gave better
-#:   time-to-intercept), so both are kept.
-#: * ``w4_periodicity_bonus`` is the weakest axis at ~0.007 spread and is fixed at its
-#:   better level.
+#: * ``staleness_saturation`` dominated (0.073 at 32 against -0.015 at 64), so only the
+#:   useful range is kept;
+#: * ``w2_exploration_bonus`` was monotone decreasing above 2.5, so 5.0 and 7.0 are dropped
+#:   and 1.75 brackets the lower edge;
+#: * ``w4_periodicity_bonus`` and ``w5_scan_cost`` moved reward by under 0.007 and are
+#:   fixed at their better levels.
 #:
-#: The result is 18 configurations instead of 48, concentrated where the outcome actually
-#: moves. ``staleness_saturation`` is in timesteps, and a full open-loop sweep of 32 bands
-#: at a dwell of 2 takes 64, so the retained range sits at or below one sweep period --
-#: the region where exploration can bite before the baseline has covered the spectrum.
+#: ``max_revisit_interval`` is the new axis and the reason this search is worth rerunning.
+#: The previous grid found **no configuration** meeting the discovery constraint, because a
+#: weighted exploration bonus can always be outvoted by a band that looks productive -- so
+#: no weighting could bound how long a band goes unwatched. A hard revisit deadline can. An
+#: open-loop sweep covers 32 bands every 64 timesteps, so 64 is sweep-equivalent, lower is
+#: stricter, higher is looser, and 0 keeps the old unconstrained behaviour so the search can
+#: still reject the mechanism outright rather than being forced to adopt it.
 GRID: dict[str, list[float]] = {
     "w2_exploration_bonus": [1.75, 2.5, 3.5],
     "w4_periodicity_bonus": [1.5],
-    "w5_scan_cost": [0.1, 0.6],
-    "staleness_saturation": [24.0, 32.0, 48.0],
+    "w5_scan_cost": [0.1],
+    "staleness_saturation": [32.0, 48.0],
+    # A hard revisit deadline is the lever the weighted score could not provide. An
+    # open-loop sweep covers 32 bands every 64 timesteps, so values at and below that are
+    # stricter than the baseline and values above it are looser; 0 keeps the previous
+    # unconstrained behaviour so the search can still reject the mechanism entirely.
+    "max_revisit_interval": [0.0, 64.0, 128.0, 256.0],
 }
 
 
@@ -202,8 +204,8 @@ def main(argv: list[str] | None = None) -> int:
         settings = dict(zip(keys, combo))
         scheduler_cfg = copy.deepcopy(config.section("scheduler"))
         for key, value in settings.items():
-            if key == "staleness_saturation":
-                scheduler_cfg.setdefault("exploration", {})["staleness_saturation"] = value
+            if key in {"staleness_saturation", "max_revisit_interval"}:
+                scheduler_cfg.setdefault("exploration", {})[key] = value
             else:
                 scheduler_cfg.setdefault("weights", {})[key] = value
         metrics = evaluate_config(
@@ -218,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
 
     rows.sort(key=lambda row: (row["feasible"], row["average_reward"]), reverse=True)
     header = (
-        f"{'ok':<3}{'w2':>6}{'w4':>6}{'w5':>6}{'sat':>7}"
+        f"{'ok':<3}{'w2':>6}{'w5':>6}{'sat':>6}{'revisit':>9}"
         f"{'reward':>9}{'Pd':>9}{'rate':>8}{'tti_cens':>10}{'bandcov':>9}"
     )
     LOGGER.info("%s", header)
@@ -227,8 +229,8 @@ def main(argv: list[str] | None = None) -> int:
         LOGGER.info(
             "%s",
             f"{'OK' if row['feasible'] else '':<3}"
-            f"{row['w2_exploration_bonus']:>6}{row['w4_periodicity_bonus']:>6}"
-            f"{row['w5_scan_cost']:>6}{row['staleness_saturation']:>7}"
+            f"{row['w2_exploration_bonus']:>6}{row['w5_scan_cost']:>6}"
+            f"{row['staleness_saturation']:>6}{row['max_revisit_interval']:>9}"
             f"{row['average_reward']:>9.4f}{row['probability_of_detection']:>9.4f}"
             f"{row['average_intercept_rate']:>8.3f}"
             f"{row['average_time_to_intercept_censored']:>10.1f}"
@@ -245,11 +247,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         LOGGER.info("")
         LOGGER.info(
-            "Selected: w2=%s w4=%s w5=%s staleness_saturation=%s",
+            "Selected: w2=%s w5=%s staleness_saturation=%s max_revisit_interval=%s",
             best["w2_exploration_bonus"],
-            best["w4_periodicity_bonus"],
             best["w5_scan_cost"],
             best["staleness_saturation"],
+            best["max_revisit_interval"],
         )
 
     write_json(

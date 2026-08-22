@@ -210,15 +210,39 @@ def build_scenarios_for_split(
     return out
 
 
-def pick_demo_scenario(scenarios: list[Scenario]) -> Scenario | None:
+def pick_demo_scenario(scenarios: list[Scenario]) -> tuple[int, Scenario] | tuple[None, None]:
     """Pick the most illustrative scenario instance for a plot or the dashboard.
 
-    Chooses the environment with a mid-range occupancy: a near-empty or near-saturated
-    grid makes a poor demonstration of a scheduler.
+    Not the first one, and not the median either. A frequency-time map only tells a story
+    when several bands are genuinely active: with one active band both strategies draw a
+    single stripe and the figure says nothing, while with almost every band busy the
+    receiver cannot help hitting something and the comparison looks trivial.
+
+    So this scores each environment on how close it is to a readable number of active bands
+    and prefers mid-range occupancy as a tie-break.
+
+    Args:
+        scenarios: candidate scenario instances.
+
+    Returns:
+        ``(index, scenario)`` of the best demonstration, or ``(None, None)`` if there are
+        no usable environments.
     """
-    usable = [s for s in scenarios if s.environment.n_timesteps > 0]
+    usable = [(i, s) for i, s in enumerate(scenarios) if s.environment.n_timesteps > 0]
     if not usable:
-        return None
-    occupancies = np.array([s.environment.occupancy for s in usable])
-    target = float(np.median(occupancies))
-    return usable[int(np.argmin(np.abs(occupancies - target)))]
+        return None, None
+
+    #: Active-band count that reads best on a 32-band frequency-time map.
+    target_active_bands = 8.0
+
+    def score(item: tuple[int, Scenario]) -> float:
+        environment = item[1].environment
+        active_bands = float((environment.active.sum(axis=0) > 0).sum())
+        occupancy = environment.occupancy
+        # Distance from a readable band count, plus a mild penalty for extreme occupancy.
+        band_penalty = abs(active_bands - target_active_bands) / max(1.0, target_active_bands)
+        occupancy_penalty = abs(occupancy - 0.25)
+        return band_penalty + occupancy_penalty
+
+    best = min(usable, key=score)
+    return best[0], best[1]

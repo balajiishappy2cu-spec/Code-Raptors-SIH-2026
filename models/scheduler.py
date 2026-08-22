@@ -230,6 +230,12 @@ class SmartScanScheduler(Scheduler):
         self.staleness_saturation = max(
             1.0, float(exploration_cfg.get("staleness_saturation", 100))
         )
+        # Hard revisit guarantee. A weighted bonus can always be outvoted by a band that
+        # looks productive, so exploration alone cannot bound how long a band goes
+        # unwatched -- which is exactly why an open-loop sweep beats this scheduler on
+        # discovery. Real ES receivers solve it the same way: a mandatory revisit
+        # interval per band, with priority scheduling in between. 0 disables it.
+        self.max_revisit_interval = float(exploration_cfg.get("max_revisit_interval", 0) or 0)
         self.predictor = predictor
         self._feature_index = {name: i for i, name in enumerate(FEATURE_NAMES)}
         self._last_scores: np.ndarray = np.zeros(n_bands, dtype=np.float64)
@@ -289,8 +295,21 @@ class SmartScanScheduler(Scheduler):
             + self.w4 * periodicity
             - self.w5 * scan_cost
         )
-        best = float(scores.max())
-        candidates = np.flatnonzero(scores >= best - 1e-12)
+        # Any band overdue for a revisit pre-empts the score: the choice is restricted to
+        # overdue bands, and the best-scoring one among them wins. This bounds the time any
+        # band can go unobserved while still letting the model allocate every other dwell.
+        overdue = np.zeros(self.n_bands, dtype=bool)
+        if self.max_revisit_interval > 0:
+            for candidate_band in range(self.n_bands):
+                last_visit = tracker.histories[candidate_band].last_visit
+                staleness = (
+                    float("inf") if last_visit < 0 else float(timestep - last_visit)
+                )
+                overdue[candidate_band] = staleness >= self.max_revisit_interval
+
+        effective = np.where(overdue, scores, -np.inf) if overdue.any() else scores
+        best = float(effective.max())
+        candidates = np.flatnonzero(effective >= best - 1e-12)
         band = int(self.rng.choice(candidates))
 
         self._last_scores = scores
@@ -313,6 +332,8 @@ class SmartScanScheduler(Scheduler):
                 "w4_periodicity_bonus": self.w4,
                 "w5_scan_cost": self.w5,
             },
+            "forced_revisit": bool(overdue[band]),
+            "n_overdue_bands": int(overdue.sum()),
             "runner_up_band": int(np.argsort(scores)[-2]) if self.n_bands > 1 else band,
             "all_scores": scores.tolist(),
             "all_probabilities": probability.tolist(),
@@ -358,6 +379,7 @@ class SmartScanScheduler(Scheduler):
                 "prior_beta": self.thompson.prior_beta,
             },
             "staleness_saturation": self.staleness_saturation,
+            "max_revisit_interval": self.max_revisit_interval,
         }
 
 

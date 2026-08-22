@@ -108,7 +108,11 @@ def build_estimator(model_type: str, params: dict[str, Any]) -> Any:
     if kind == "random_forest":
         from sklearn.ensemble import RandomForestClassifier
 
-        settings.setdefault("n_jobs", -1)
+        # n_jobs is deliberately left at 1. The scheduler calls predict_proba on n_bands
+        # rows once per decision, tens of thousands of times per experiment, and joblib
+        # spins up a worker pool on every one of those calls -- with batches this small the
+        # pool overhead dwarfs the work and makes inference far slower than single-threaded.
+        settings.setdefault("n_jobs", 1)
         return RandomForestClassifier(**settings)
 
     if kind == "mlp":
