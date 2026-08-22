@@ -94,8 +94,21 @@ def get_config() -> Config:
 
 @st.cache_resource(show_spinner=False)
 def get_manifest(path: str) -> DatasetManifest:
-    """Load the dataset manifest."""
-    return DatasetManifest.load(path)
+    """Load the dataset manifest, falling back to the bundled demo subset.
+
+    A public deployment ships only ``data/demo`` -- the full processed cache is hundreds of
+    megabytes and the source dataset is gated, so neither can travel with the app. Rather
+    than maintain a second configuration file that has to be kept in step, the console
+    prefers the configured manifest when it exists and otherwise picks up the bundle. One
+    config therefore works in both places.
+    """
+    configured = Path(path)
+    if configured.exists():
+        return DatasetManifest.load(configured)
+    demo = Path(__file__).resolve().parent.parent / "data" / "demo" / "manifest.json"
+    if demo.exists():
+        return DatasetManifest.load(demo)
+    return DatasetManifest.load(configured)  # raises with the actionable message
 
 
 @st.cache_resource(show_spinner=False)

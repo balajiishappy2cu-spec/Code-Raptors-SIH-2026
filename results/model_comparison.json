@@ -1,0 +1,54 @@
+{
+  "created": "2026-08-22T04:35:28+00:00",
+  "seed": 42,
+  "split": "test",
+  "timesteps": 800,
+  "n_environments": 39,
+  "n_rows": {
+    "train": 741248,
+    "validation": 999424,
+    "test": 992640
+  },
+  "reference_model": "logistic",
+  "note": "Every model trained on the identical train split and scored on the identical test split, then run through the identical scheduler over the identical environments with matched receiver seeds.",
+  "rows": [
+    {
+      "model": "heuristic",
+      "roc_auc": 0.8799449061136795,
+      "pr_auc": 0.759841320435085,
+      "f1": 0.7685429222467471,
+      "brier": 0.06151316567014631,
+      "ece": 0.04529197264684186,
+      "fit_seconds": 0.0,
+      "intercept_rate": 0.07830128205128205,
+      "average_reward": -0.02670352564102564,
+      "intercept_time_error": 37.518405161204875,
+      "tti_censored": 170.66834554334554,
+      "active_band_coverage": 0.8348595848595849
+    },
+    {
+      "model": "logistic",
+      "roc_auc": 0.9711568309053248,
+      "pr_auc": 0.9201390879340762,
+      "f1": 0.8468483697735705,
+      "brier": 0.03912471235504813,
+      "ece": 0.0036736225736580816,
+      "fit_seconds": 4.581863999992493,
+      "intercept_rate": 0.08368589743589745,
+      "average_reward": -0.01997115384615385,
+      "intercept_time_error": 32.40459830267706,
+      "tti_censored": 165.93462555962554,
+      "active_band_coverage": 0.8621489621489622
+    }
+  ],
+  "paired_vs_reference": [
+    {
+      "model": "heuristic",
+      "vs": "logistic",
+      "mean_difference": -0.005384615384615386,
+      "ci_low": -0.00871126288905741,
+      "ci_high": -0.0020579678801733625,
+      "distinguishable": true
+    }
+  ]
+}

@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
+from common.config import REPO_ROOT
 from common.io_utils import read_json, utc_timestamp, write_json
 from common.logging_utils import get_logger
 from dataio.tdc_interface import PulseTrainRecord, load_pulse_train
@@ -39,9 +40,25 @@ class ManifestEntry:
     stratum: str
     characterisation: dict[str, Any] = field(default_factory=dict)
 
+    def resolved_path(self) -> Path:
+        """Return the pulse train path, resolving relative entries against the repo.
+
+        Manifests written by the sampler store absolute paths, which is fine on the
+        machine that produced them and useless anywhere else. A deployed copy stores paths
+        relative to the repository root instead, so the same manifest works on a checkout
+        with a different layout.
+        """
+        candidate = Path(self.path)
+        if candidate.is_absolute() and candidate.exists():
+            return candidate
+        relative = REPO_ROOT / self.path
+        if relative.exists():
+            return relative
+        return candidate
+
     def load(self, max_pulses: int = 0) -> PulseTrainRecord:
         """Load this pulse train, optionally limited to a contiguous window."""
-        record = load_pulse_train(self.path)
+        record = load_pulse_train(self.resolved_path())
         return record.contiguous_window(max_pulses) if max_pulses else record
 
 

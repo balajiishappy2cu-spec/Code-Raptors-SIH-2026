@@ -1,3 +1,6 @@
+# Runtime dependencies. The deployed dashboard needs streamlit, plotly, pandas, numpy,
+# xgboost, scikit-learn, h5py, joblib and PyYAML; matplotlib is used by the offline
+# figure scripts (visualization/plots.py) and is harmless in a deployment.
 numpy>=1.26
 pandas>=2.0
 scipy>=1.11
@@ -5,9 +8,11 @@ scikit-learn>=1.4
 xgboost>=2.0
 joblib>=1.3
 h5py>=3.10
-matplotlib>=3.8
 PyYAML>=6.0
 streamlit>=1.30
-# Optional (Section 20 bonus only):
-# hdbscan>=0.8.33
 plotly>=6.0
+matplotlib>=3.8
+
+# Optional, for the stage-1 deinterleaving bonus only. scikit-learn's bundled HDBSCAN is
+# used by default, so this is not required:
+# hdbscan>=0.8.33

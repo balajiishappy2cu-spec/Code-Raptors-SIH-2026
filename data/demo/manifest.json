@@ -1,0 +1,419 @@
+{
+  "seed": 42,
+  "mode": "stare",
+  "source": "huggingface",
+  "created": "2026-08-22T11:39:36+00:00",
+  "notes": {
+    "source_reason": "250 files listed and readable in stare/test_stare",
+    "strata": [
+      "spatial_scan",
+      "frequency_agile"
+    ],
+    "counts_requested": {
+      "train": 15,
+      "validation": 20,
+      "test": 20
+    },
+    "max_pulses_per_train": 60000,
+    "window_mode": "contiguous",
+    "ground_truth_note": "stare mode is used as ground truth: scan-mode files already have pulses missing because of the dataset's own sweeping receiver, which would be conflated with the environment if used as truth here",
+    "bundle": "Demonstration subset for public deployment: a few pulse trains trimmed to 60000 pulses each, with repository-relative paths. The published metrics come from the full run recorded in results/, not from this subset.",
+    "trains_per_split": 4
+  },
+  "strata": {
+    "frequency_agile": 5,
+    "spatial_scan": 7
+  },
+  "counts": {
+    "train": 4,
+    "validation": 4,
+    "test": 4
+  },
+  "entries": [
+    {
+      "name": "config_786",
+      "path": "data/demo/train/config_786.h5",
+      "split": "train",
+      "stratum": "frequency_agile",
+      "characterisation": {
+        "name": "config_786",
+        "path": "C:\\Users\\Saumya\\OneDrive\\Desktop\\SIH\\smart-ew-scan\\data\\raw\\stare\\train_stare\\config_786.h5",
+        "n_pulses": 743334,
+        "n_pulses_inspected": 200000,
+        "n_emitters": 39,
+        "toa_span_us": 8543781.65625,
+        "cf_min_mhz": 1199.61669921875,
+        "cf_max_mhz": 10998.8388671875,
+        "aoa_span_deg": 359.986328125,
+        "mean_pw_us": 2.8754179153407016,
+        "behaviour_counts": {
+          "static": 1,
+          "spatial_scan": 37,
+          "frequency_agile": 29
+        },
+        "n_spatial_scan": 37,
+        "n_frequency_agile": 29,
+        "frac_spatial_scan": 0.5522388059701493,
+        "frac_frequency_agile": 0.43283582089552236,
+        "dominant_stratum": "spatial_scan",
+        "behaviour_source": "metadata",
+        "description": "Synthetic PDWs generated from emitter library",
+        "split_hint": "train",
+        "file_bytes": 12236547
+      }
+    },
+    {
+      "name": "config_998",
+      "path": "data/demo/train/config_998.h5",
+      "split": "train",
+      "stratum": "spatial_scan",
+      "characterisation": {
+        "name": "config_998",
+        "path": "C:\\Users\\Saumya\\OneDrive\\Desktop\\SIH\\smart-ew-scan\\data\\raw\\stare\\train_stare\\config_998.h5",
+        "n_pulses": 1526111,
+        "n_pulses_inspected": 200000,
+        "n_emitters": 37,
+        "toa_span_us": 4957764.507080078,
+        "cf_min_mhz": 1219.4459228515625,
+        "cf_max_mhz": 12000.9658203125,
+        "aoa_span_deg": 337.06260681152344,
+        "mean_pw_us": 18.912587527892804,
+        "behaviour_counts": {
+          "static": 3,
+          "spatial_scan": 52,
+          "frequency_agile": 22
+        },
+        "n_spatial_scan": 52,
+        "n_frequency_agile": 22,
+        "frac_spatial_scan": 0.6753246753246753,
+        "frac_frequency_agile": 0.2857142857142857,
+        "dominant_stratum": "spatial_scan",
+        "behaviour_source": "metadata",
+        "description": "Synthetic PDWs generated from emitter library",
+        "split_hint": "train",
+        "file_bytes": 24230200
+      }
+    },
+    {
+      "name": "config_2047",
+      "path": "data/demo/train/config_2047.h5",
+      "split": "train",
+      "stratum": "frequency_agile",
+      "characterisation": {
+        "name": "config_2047",
+        "path": "C:\\Users\\Saumya\\OneDrive\\Desktop\\SIH\\smart-ew-scan\\data\\raw\\stare\\train_stare\\config_2047.h5",
+        "n_pulses": 911627,
+        "n_pulses_inspected": 200000,
+        "n_emitters": 36,
+        "toa_span_us": 7048369.89453125,
+        "cf_min_mhz": 1219.3824462890625,
+        "cf_max_mhz": 10004.9697265625,
+        "aoa_span_deg": 359.9864044189453,
+        "mean_pw_us": 0.8991445346819888,
+        "behaviour_counts": {
+          "static": 2,
+          "spatial_scan": 36,
+          "frequency_agile": 27
+        },
+        "n_spatial_scan": 36,
+        "n_frequency_agile": 27,
+        "frac_spatial_scan": 0.5538461538461539,
+        "frac_frequency_agile": 0.4153846153846154,
+        "dominant_stratum": "spatial_scan",
+        "behaviour_source": "metadata",
+        "description": "Synthetic PDWs generated from emitter library",
+        "split_hint": "train",
+        "file_bytes": 14665282
+      }
+    },
+    {
+      "name": "config_1454",
+      "path": "data/demo/train/config_1454.h5",
+      "split": "train",
+      "stratum": "spatial_scan",
+      "characterisation": {
+        "name": "config_1454",
+        "path": "C:\\Users\\Saumya\\OneDrive\\Desktop\\SIH\\smart-ew-scan\\data\\raw\\stare\\train_stare\\config_1454.h5",
+        "n_pulses": 320764,
+        "n_pulses_inspected": 200000,
+        "n_emitters": 34,
+        "toa_span_us": 16125846.125,
+        "cf_min_mhz": 1025.5028076171875,
+        "cf_max_mhz": 10050.9921875,
+        "aoa_span_deg": 359.89776611328125,
+        "mean_pw_us": 6.200878493508547,
+        "behaviour_counts": {
+          "static": 0,
+          "spatial_scan": 28,
+          "frequency_agile": 14
+        },
+        "n_spatial_scan": 28,
+        "n_frequency_agile": 14,
+        "frac_spatial_scan": 0.6666666666666666,
+        "frac_frequency_agile": 0.3333333333333333,
+        "dominant_stratum": "spatial_scan",
+        "behaviour_source": "metadata",
+        "description": "Synthetic PDWs generated from emitter library",
+        "split_hint": "train",
+        "file_bytes": 5384456
+      }
+    },
+    {
+      "name": "config_157",
+      "path": "data/demo/validation/config_157.h5",
+      "split": "validation",
+      "stratum": "spatial_scan",
+      "characterisation": {
+        "name": "config_157",
+        "path": "C:\\Users\\Saumya\\OneDrive\\Desktop\\SIH\\smart-ew-scan\\data\\raw\\stare\\val_stare\\config_157.h5",
+        "n_pulses": 1994263,
+        "n_pulses_inspected": 200000,
+        "n_emitters": 37,
+        "toa_span_us": 6016179.2158203125,
+        "cf_min_mhz": 1008.6734619140625,
+        "cf_max_mhz": 11405.6376953125,
+        "aoa_span_deg": 359.9879608154297,
+        "mean_pw_us": 8.963162323504854,
+        "behaviour_counts": {
+          "static": 2,
+          "spatial_scan": 63,
+          "frequency_agile": 26
+        },
+        "n_spatial_scan": 63,
+        "n_frequency_agile": 26,
+        "frac_spatial_scan": 0.6923076923076923,
+        "frac_frequency_agile": 0.2857142857142857,
+        "dominant_stratum": "spatial_scan",
+        "behaviour_source": "metadata",
+        "description": "Synthetic PDWs generated from emitter library",
+        "split_hint": "validation",
+        "file_bytes": 31552971
+      }
+    },
+    {
+      "name": "config_92",
+      "path": "data/demo/validation/config_92.h5",
+      "split": "validation",
+      "stratum": "frequency_agile",
+      "characterisation": {
+        "name": "config_92",
+        "path": "C:\\Users\\Saumya\\OneDrive\\Desktop\\SIH\\smart-ew-scan\\data\\raw\\stare\\val_stare\\config_92.h5",
+        "n_pulses": 1005234,
+        "n_pulses_inspected": 200000,
+        "n_emitters": 36,
+        "toa_span_us": 5484194.6015625,
+        "cf_min_mhz": 1023.8526000976562,
+        "cf_max_mhz": 11999.2802734375,
+        "aoa_span_deg": 359.8437957763672,
+        "mean_pw_us": 1.951663253321359,
+        "behaviour_counts": {
+          "static": 3,
+          "spatial_scan": 44,
+          "frequency_agile": 38
+        },
+        "n_spatial_scan": 44,
+        "n_frequency_agile": 38,
+        "frac_spatial_scan": 0.5176470588235295,
+        "frac_frequency_agile": 0.4470588235294118,
+        "dominant_stratum": "spatial_scan",
+        "behaviour_source": "metadata",
+        "description": "Synthetic PDWs generated from emitter library",
+        "split_hint": "validation",
+        "file_bytes": 16557009
+      }
+    },
+    {
+      "name": "config_80",
+      "path": "data/demo/validation/config_80.h5",
+      "split": "validation",
+      "stratum": "spatial_scan",
+      "characterisation": {
+        "name": "config_80",
+        "path": "C:\\Users\\Saumya\\OneDrive\\Desktop\\SIH\\smart-ew-scan\\data\\raw\\stare\\val_stare\\config_80.h5",
+        "n_pulses": 831124,
+        "n_pulses_inspected": 200000,
+        "n_emitters": 32,
+        "toa_span_us": 11242975.2890625,
+        "cf_min_mhz": 1196.702880859375,
+        "cf_max_mhz": 11406.484375,
+        "aoa_span_deg": 359.9994812011719,
+        "mean_pw_us": 8.578685431590007,
+        "behaviour_counts": {
+          "static": 4,
+          "spatial_scan": 35,
+          "frequency_agile": 14
+        },
+        "n_spatial_scan": 35,
+        "n_frequency_agile": 14,
+        "frac_spatial_scan": 0.660377358490566,
+        "frac_frequency_agile": 0.2641509433962264,
+        "dominant_stratum": "spatial_scan",
+        "behaviour_source": "metadata",
+        "description": "Synthetic PDWs generated from emitter library",
+        "split_hint": "validation",
+        "file_bytes": 13060251
+      }
+    },
+    {
+      "name": "config_136",
+      "path": "data/demo/validation/config_136.h5",
+      "split": "validation",
+      "stratum": "frequency_agile",
+      "characterisation": {
+        "name": "config_136",
+        "path": "C:\\Users\\Saumya\\OneDrive\\Desktop\\SIH\\smart-ew-scan\\data\\raw\\stare\\val_stare\\config_136.h5",
+        "n_pulses": 2097543,
+        "n_pulses_inspected": 200000,
+        "n_emitters": 31,
+        "toa_span_us": 5646877.4296875,
+        "cf_min_mhz": 999.5161743164062,
+        "cf_max_mhz": 10014.1767578125,
+        "aoa_span_deg": 359.7745666503906,
+        "mean_pw_us": 9.972520506157354,
+        "behaviour_counts": {
+          "static": 3,
+          "spatial_scan": 42,
+          "frequency_agile": 35
+        },
+        "n_spatial_scan": 42,
+        "n_frequency_agile": 35,
+        "frac_spatial_scan": 0.525,
+        "frac_frequency_agile": 0.4375,
+        "dominant_stratum": "spatial_scan",
+        "behaviour_source": "metadata",
+        "description": "Synthetic PDWs generated from emitter library",
+        "split_hint": "validation",
+        "file_bytes": 33097016
+      }
+    },
+    {
+      "name": "config_217",
+      "path": "data/demo/test/config_217.h5",
+      "split": "test",
+      "stratum": "spatial_scan",
+      "characterisation": {
+        "name": "config_217",
+        "path": "C:\\Users\\Saumya\\OneDrive\\Desktop\\SIH\\smart-ew-scan\\data\\raw\\stare\\test_stare\\config_217.h5",
+        "n_pulses": 1517043,
+        "n_pulses_inspected": 200000,
+        "n_emitters": 51,
+        "toa_span_us": 6271163.1015625,
+        "cf_min_mhz": 1050.9617919921875,
+        "cf_max_mhz": 11405.7802734375,
+        "aoa_span_deg": 359.9897155761719,
+        "mean_pw_us": 10.800882940814104,
+        "behaviour_counts": {
+          "static": 2,
+          "spatial_scan": 71,
+          "frequency_agile": 35
+        },
+        "n_spatial_scan": 71,
+        "n_frequency_agile": 35,
+        "frac_spatial_scan": 0.6574074074074074,
+        "frac_frequency_agile": 0.32407407407407407,
+        "dominant_stratum": "spatial_scan",
+        "behaviour_source": "metadata",
+        "description": "Synthetic PDWs generated from emitter library",
+        "split_hint": "test",
+        "file_bytes": 24346811
+      }
+    },
+    {
+      "name": "config_221",
+      "path": "data/demo/test/config_221.h5",
+      "split": "test",
+      "stratum": "spatial_scan",
+      "characterisation": {
+        "name": "config_221",
+        "path": "C:\\Users\\Saumya\\OneDrive\\Desktop\\SIH\\smart-ew-scan\\data\\raw\\stare\\test_stare\\config_221.h5",
+        "n_pulses": 2423515,
+        "n_pulses_inspected": 200000,
+        "n_emitters": 41,
+        "toa_span_us": 5176704.099609375,
+        "cf_min_mhz": 1198.7581787109375,
+        "cf_max_mhz": 11992.2763671875,
+        "aoa_span_deg": 359.9523620605469,
+        "mean_pw_us": 7.9238047608199365,
+        "behaviour_counts": {
+          "static": 0,
+          "spatial_scan": 63,
+          "frequency_agile": 25
+        },
+        "n_spatial_scan": 63,
+        "n_frequency_agile": 25,
+        "frac_spatial_scan": 0.7159090909090909,
+        "frac_frequency_agile": 0.2840909090909091,
+        "dominant_stratum": "spatial_scan",
+        "behaviour_source": "metadata",
+        "description": "Synthetic PDWs generated from emitter library",
+        "split_hint": "test",
+        "file_bytes": 37320378
+      }
+    },
+    {
+      "name": "config_220",
+      "path": "data/demo/test/config_220.h5",
+      "split": "test",
+      "stratum": "spatial_scan",
+      "characterisation": {
+        "name": "config_220",
+        "path": "C:\\Users\\Saumya\\OneDrive\\Desktop\\SIH\\smart-ew-scan\\data\\raw\\stare\\test_stare\\config_220.h5",
+        "n_pulses": 1909620,
+        "n_pulses_inspected": 200000,
+        "n_emitters": 34,
+        "toa_span_us": 5143713.53125,
+        "cf_min_mhz": 1211.5679931640625,
+        "cf_max_mhz": 10001.0078125,
+        "aoa_span_deg": 359.97886657714844,
+        "mean_pw_us": 24.270078907776885,
+        "behaviour_counts": {
+          "static": 2,
+          "spatial_scan": 70,
+          "frequency_agile": 34
+        },
+        "n_spatial_scan": 70,
+        "n_frequency_agile": 34,
+        "frac_spatial_scan": 0.660377358490566,
+        "frac_frequency_agile": 0.32075471698113206,
+        "dominant_stratum": "spatial_scan",
+        "behaviour_source": "metadata",
+        "description": "Synthetic PDWs generated from emitter library",
+        "split_hint": "test",
+        "file_bytes": 30367962
+      }
+    },
+    {
+      "name": "config_141",
+      "path": "data/demo/test/config_141.h5",
+      "split": "test",
+      "stratum": "frequency_agile",
+      "characterisation": {
+        "name": "config_141",
+        "path": "C:\\Users\\Saumya\\OneDrive\\Desktop\\SIH\\smart-ew-scan\\data\\raw\\stare\\test_stare\\config_141.h5",
+        "n_pulses": 672821,
+        "n_pulses_inspected": 200000,
+        "n_emitters": 27,
+        "toa_span_us": 9069456.201171875,
+        "cf_min_mhz": 1198.538818359375,
+        "cf_max_mhz": 11999.865234375,
+        "aoa_span_deg": 358.70318603515625,
+        "mean_pw_us": 18.571862506015616,
+        "behaviour_counts": {
+          "static": 1,
+          "spatial_scan": 26,
+          "frequency_agile": 19
+        },
+        "n_spatial_scan": 26,
+        "n_frequency_agile": 19,
+        "frac_spatial_scan": 0.5652173913043478,
+        "frac_frequency_agile": 0.41304347826086957,
+        "dominant_stratum": "spatial_scan",
+        "behaviour_source": "metadata",
+        "description": "Synthetic PDWs generated from emitter library",
+        "split_hint": "test",
+        "file_bytes": 10701566
+      }
+    }
+  ],
+  "pass1": []
+}

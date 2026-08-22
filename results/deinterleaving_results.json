@@ -1,0 +1,132 @@
+{
+  "created": "2026-08-22T03:12:06+00:00",
+  "split": "test",
+  "data_source": "huggingface",
+  "note": "Stage-1 deinterleaving. Not required by the problem statement and kept entirely separate from the scheduler figures of merit.",
+  "config": {
+    "max_pulses": 20000,
+    "min_cluster_size": 25,
+    "toa_weight": 1.0,
+    "features": [
+      "toa",
+      "cf",
+      "pw",
+      "aoa",
+      "amplitude"
+    ]
+  },
+  "rows": [
+    {
+      "pulse_train": "config_189",
+      "n_pulses": 20000,
+      "n_true_emitters": 6,
+      "n_clusters_found": 9,
+      "predict_ratio": 0.99815,
+      "metrics": {
+        "Homogeneity": 0.9981499999999999,
+        "Completeness": 0.9655397212350875,
+        "V-measure": 0.9815740871166119,
+        "Adjusted Rand Index": 0.9978081691382805,
+        "Adjusted Mutual Information": 0.9815383939072715,
+        "MCC": 0.637848037575358,
+        "F1": 0.5807418181818181,
+        "discount": 0.99815
+      }
+    },
+    {
+      "pulse_train": "config_158",
+      "n_pulses": 18853,
+      "n_true_emitters": 3,
+      "n_clusters_found": 8,
+      "predict_ratio": 0.9876412242083488,
+      "metrics": {
+        "Homogeneity": 0.987641224208349,
+        "Completeness": 0.8893273497657557,
+        "V-measure": 0.935909492171109,
+        "Adjusted Rand Index": 0.9631663186132721,
+        "Adjusted Mutual Information": 0.9358779501088889,
+        "MCC": 0.6966466901876798,
+        "F1": 0.6614477923597198,
+        "discount": 0.9876412242083488
+      }
+    },
+    {
+      "pulse_train": "config_221",
+      "n_pulses": 20000,
+      "n_true_emitters": 17,
+      "n_clusters_found": 20,
+      "predict_ratio": 0.96385,
+      "metrics": {
+        "Homogeneity": 0.9434999524247801,
+        "Completeness": 0.6668453074309674,
+        "V-measure": 0.7814082253294745,
+        "Adjusted Rand Index": 0.4523309407577369,
+        "Adjusted Mutual Information": 0.7807869028437479,
+        "MCC": 0.03389750502860479,
+        "F1": 0.002480952380952381,
+        "discount": 0.96385
+      }
+    },
+    {
+      "pulse_train": "config_45",
+      "n_pulses": 20000,
+      "n_true_emitters": 4,
+      "n_clusters_found": 5,
+      "predict_ratio": 0.99995,
+      "metrics": {
+        "Homogeneity": 0.99995,
+        "Completeness": 0.9862092199113398,
+        "V-measure": 0.9930320787619087,
+        "Adjusted Rand Index": 0.9996892429765208,
+        "Adjusted Mutual Information": 0.9930294084069846,
+        "MCC": 0.7118397701454103,
+        "F1": 0.6761956967213115,
+        "discount": 0.99995
+      }
+    },
+    {
+      "pulse_train": "config_136",
+      "n_pulses": 20000,
+      "n_true_emitters": 7,
+      "n_clusters_found": 6,
+      "predict_ratio": 0.99695,
+      "metrics": {
+        "Homogeneity": 0.9820472817330147,
+        "Completeness": 0.13159274914036073,
+        "V-measure": 0.2320863079746092,
+        "Adjusted Rand Index": 0.06316890264751898,
+        "Adjusted Mutual Information": 0.2316915790767182,
+        "MCC": 0.13487710000946496,
+        "F1": 0.42462685185185184,
+        "discount": 0.99695
+      }
+    },
+    {
+      "pulse_train": "config_5",
+      "n_pulses": 20000,
+      "n_true_emitters": 6,
+      "n_clusters_found": 16,
+      "predict_ratio": 0.95795,
+      "metrics": {
+        "Homogeneity": 0.949510513717172,
+        "Completeness": 0.24349942291590992,
+        "V-measure": 0.387599893417869,
+        "Adjusted Rand Index": 0.08512800258574897,
+        "Adjusted Mutual Information": 0.3870481539752909,
+        "MCC": 0.13489882264832526,
+        "F1": 0.15276667684229805,
+        "discount": 0.95795
+      }
+    }
+  ],
+  "summary": {
+    "Homogeneity": 0.9767998286805527,
+    "Completeness": 0.6471689617332368,
+    "V-measure": 0.7186016807952638,
+    "Adjusted Rand Index": 0.5935485961198464,
+    "Adjusted Mutual Information": 0.7183287313864836,
+    "MCC": 0.3916679875991405,
+    "F1": 0.4163766313896586,
+    "discount": 0.9840818707013915
+  }
+}
