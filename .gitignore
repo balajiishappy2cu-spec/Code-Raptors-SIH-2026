@@ -1,0 +1,9 @@
+data/raw/
+data/processed/
+data/cache/
+results/
+figures/
+models/artifacts/
+__pycache__/
+*.pyc
+.env

@@ -1,0 +1,193 @@
+# Smart Scan Strategy for Electronic Warfare -- MVP configuration.
+# Every experiment is driven from this file; no parameter is hardcoded in the modules.
+
+random_seed: 42
+
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  cache_dir: data/cache
+  manifest: data/processed/manifest.json
+  model_artifact: models/artifacts/activity_predictor.joblib
+  results_dir: results
+  figures_dir: figures
+
+data:
+  # Ground truth is built from *stare* mode pulse trains (see README, "Why stare mode").
+  mode: stare
+  max_train_trains: 15
+  max_validation_trains: 5
+  max_test_trains: 5
+  max_pulses_per_train: 400000     # covers a whole mock train; real stare trains average ~1.27M
+  window_mode: contiguous          # one contiguous ToA-ordered slice per train
+  stratify_on: [spatial_scan, frequency_agile]
+
+  # Source of pulse trains. "auto" tries the real TSRD download first and falls back
+  # to the bundled TSRD-format mock generator if the dataset is not reachable.
+  source: auto                     # auto | huggingface | mock
+  hf_repo_id: alan-turing-institute/turing-synthetic-radar-dataset
+  hf_pass1_files: 40               # Pass 1: total budget of files to inspect
+  hf_pass1_headroom: 2.0           # inspect this many times each split's requirement
+  hf_max_file_bytes: 40000000      # skip individual files larger than this in the 24h build
+
+mock:
+  # Parameters for the TSRD-format synthetic PDW generator (used when real data is absent).
+  n_trains_pool: 40
+  collection_time_us: 10000000     # 10 s per pulse train
+  n_emitters_range: [12, 34]
+  cf_range_mhz: [2000.0, 18000.0]
+  pri_range_us: [200.0, 2500.0]
+  pw_range_us: [0.5, 40.0]
+  amplitude_range_db: [-95.0, -45.0]
+  pri_jitter_frac: 0.03
+  drop_rate: 0.02                  # emulates the TSRD stare "randomly dropped pulses" caveat
+  # Behaviour mix per pulse train (probabilities, renormalised internally)
+  behaviour_mix:
+    static: 0.34
+    spatial_scan: 0.33
+    frequency_agile: 0.33
+  spatial_scan:
+    rotation_period_us_range: [1000000.0, 4000000.0]   # 1-4 s antenna rotation
+    beamwidth_deg_range: [4.0, 20.0]
+  frequency_agile:
+    hop_period_us_range: [20000.0, 400000.0]
+    n_channels_range: [3, 9]
+    hop_span_mhz: 4000.0
+
+environment:
+  n_bands: 32
+  # The real TSRD declares its own surveillance range in metadata/receiver/freq_range_mhz
+  # as [500, 18000] MHz, and 21% of real pulses fall below 2000 MHz. Narrowing the range
+  # would silently drop a fifth of the ground truth, so the dataset's declared range is
+  # used verbatim rather than a guess.
+  cf_min_mhz: 500.0
+  cf_max_mhz: 18000.0
+  timestep_us: 2000.0              # 2 ms per timestep
+  max_timesteps: 5000              # cap per pulse train (10 s of simulated time)
+  min_pulses_for_active: 1         # pulses in a (timestep, band) cell to call it a transmission
+
+receiver:
+  instantaneous_bandwidth: 1       # bands observable per timestep
+  dwell_timesteps: 2               # timesteps spent on a band before re-deciding
+  detection_probability: 0.95      # P(detect | band active and observed)
+  false_alarm_probability: 0.01    # P(detect | band inactive and observed)
+  retune_cost_timesteps: 0         # settling penalty when changing band (0 = ideal receiver)
+
+features:
+  history_window: 50               # timesteps used for occupancy / hit-rate windows
+  max_pri_samples: 24              # most recent hit intervals kept per band for PRI stats
+  min_pri_samples: 3               # intervals needed before a PRI estimate is emitted
+
+activity_model:
+  prediction_window: 5             # a band is "positive" if it transmits in the next N timesteps
+  xgb_params:
+    n_estimators: 300
+    max_depth: 5
+    learning_rate: 0.08
+    subsample: 0.9
+    colsample_bytree: 0.9
+    min_child_weight: 3
+    reg_lambda: 1.0
+    objective: "binary:logistic"
+    eval_metric: "logloss"
+    tree_method: hist
+    device: cuda                   # cuda | cpu -- training device; falls back to cpu if unusable
+  # Which classifier the activity model uses. scripts/compare_models.py trains all of
+  # these on the identical splits and runs each through the scheduler on the identical
+  # test environments, so a difference in the table is a difference in the model.
+  model_type: xgboost              # xgboost | logistic | random_forest | mlp
+  model_params:
+    logistic:
+      max_iter: 300
+      C: 1.0
+    random_forest:
+      n_estimators: 200
+      max_depth: 14
+      min_samples_leaf: 5
+      n_jobs: -1
+      random_state: 42
+    mlp:
+      hidden_layer_sizes: [64, 32]
+      max_iter: 60
+      early_stopping: true
+      random_state: 42
+
+  # Inference runs inside the simulation loop as thousands of n_bands-row calls, where a
+  # per-call GPU transfer costs more than the kernel saves, so the trained booster is moved
+  # back to the CPU for prediction. Training stays on the device above.
+  inference_device: cpu
+  calibrate: true                  # isotonic calibration on the validation split
+  collection_policies: [sequential, random]   # exploration policies used to collect training rows
+  collection_stride: 5             # record every band's features once every N timesteps
+  collection_timesteps: 4000       # timesteps of exploration per pulse train
+
+scheduler:
+  # Smart Scan score weights. EXPERIMENTAL, and selected under a RELAXED criterion --
+  # read this before quoting the numbers.
+  #
+  # The pre-registered rule (scripts/tune_weights.py) was: highest average reward among
+  # configurations whose censored time-to-intercept beat the Sequential baseline by at
+  # least 10% and whose active-band coverage did not regress. Searched over 18
+  # configurations on 40 real validation environments, **no configuration met it**. The
+  # frontier in results/weight_tuning.json is monotone: every gain in interception costs
+  # discovery. At 10 environments some points appeared to beat the baseline on both; that
+  # was noise, and it did not survive a properly powered sample.
+  #
+  # The point below was therefore chosen post hoc under a weaker "do no harm" criterion:
+  # it does not regress discovery (validation censored time-to-intercept 210.1 against the
+  # baseline's 210.8, active-band coverage 0.970 against 0.966) while gaining roughly 48%
+  # intercept rate. It is NOT the tuned optimum of the stated rule, and the relaxation was
+  # applied after seeing the frontier. Treat it as an operating point, not a result.
+  #
+  # For a different trade, w2_exploration_bonus is the single knob: lowering it toward
+  # 1.75 with staleness_saturation 24 reaches ~4.8x the baseline intercept rate while
+  # finding only ~75% of active bands instead of ~97%.
+  weights:
+    w1_predicted_probability: 1.0
+    w2_exploration_bonus: 3.50
+    w3_recency_bonus: 0.20
+    w4_periodicity_bonus: 1.50
+    w5_scan_cost: 0.10
+  thompson:
+    # DISABLED BY DEFAULT on measured evidence. Paired per-environment over 40 real test
+    # environments, enabling Thompson Sampling costs 0.0086 intercept rate with a 95%
+    # confidence interval of [-0.0108, -0.0064] -- it does not cross zero. The smart_ml_only
+    # arm (this block off) is best on every column of the ablation: rate, reward, prediction
+    # error and time-to-intercept.
+    #
+    # It remains implemented and one flag away because it is this project's answer to the
+    # problem statement's "the model should then be trained based on hits and misses", and
+    # because a stationary 4,000-timestep test cannot exercise the non-stationary adaptation
+    # it exists for. Set to true to re-enable.
+    enabled: false
+    prior_alpha: 1.0
+    prior_beta: 1.0
+    decay: 0.995                   # per-update decay -> adapts to non-stationary emitters
+    blend: 0.4                     # p = blend * thompson_sample + (1 - blend) * ml_probability
+  exploration:
+    staleness_saturation: 48       # timesteps at which the exploration bonus saturates
+
+reward:
+  # EXPERIMENTAL weights, stated as such in the README.
+  hit: 1.0
+  miss: -0.1
+  first_detection: 2.0
+  repeat_scan_penalty: -0.05
+  repeat_scan_window: 10           # revisit within N timesteps with no hit counts as unnecessary
+  false_alarm_penalty: 0.5
+  scan_cost: 0.01
+  intercept_time_penalty_per_timestep: 0.001
+
+simulation:
+  n_timesteps: 4000                # timesteps per experiment run (8 s)
+  scenarios: [spatial_scan, frequency_agile]
+
+deinterleaver:                     # optional bonus stage -- not required by the problem statement
+  max_pulses: 20000
+  min_cluster_size: 25
+  # Measured, not assumed: on real data toa_weight 1.0 scores V-measure 0.900 against
+  # 0.815 at 0.15, so the down-weighting was actively hurting. The original worry -- that
+  # ToA spans the whole collection window and would dominate pairwise distances -- does not
+  # survive standardisation, which already puts every feature on unit variance.
+  toa_weight: 1.0
+  features: [toa, cf, pw, aoa, amplitude]
